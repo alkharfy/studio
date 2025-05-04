@@ -21,7 +21,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { enhanceCvContent, type EnhanceCvContentInput } from '@/ai/flows/cv-content-enhancement';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, PlusCircle, Trash2, Wand2 } from 'lucide-react';
+import { Loader2, PlusCircle, Trash2, Wand2, LogOut } from 'lucide-react'; // Added LogOut
+import { ProtectedRoute } from '@/components/ProtectedRoute'; // Import ProtectedRoute
+import { useAuth } from '@/context/AuthContext'; // Import useAuth
 
 // Define Zod schema for the form
 const experienceSchema = z.object({
@@ -58,16 +60,18 @@ const cvSchema = z.object({
 
 type CvFormData = z.infer<typeof cvSchema>;
 
-export default function Home() {
+ function CvBuilderPageContent() { // Renamed original content to a sub-component
   const [isGenerating, setIsGenerating] = useState(false);
   const { toast } = useToast();
+  const { signOut, currentUser } = useAuth(); // Get signOut and currentUser
 
   const form = useForm<CvFormData>({
     resolver: zodResolver(cvSchema),
+    // Populate initial values from currentUser if available, or use defaults
     defaultValues: {
-      fullName: '',
+      fullName: currentUser?.displayName || '',
       jobTitle: '',
-      email: '',
+      email: currentUser?.email || '',
       phone: '',
       address: '',
       summary: '',
@@ -78,6 +82,19 @@ export default function Home() {
     },
     mode: 'onChange', // Validate on change
   });
+
+   // Effect to reset form when currentUser changes (e.g., after sign-in)
+   React.useEffect(() => {
+    if (currentUser) {
+      form.reset({
+        ...form.getValues(), // Keep existing values if any were typed before login
+        fullName: currentUser.displayName || form.getValues('fullName') || '',
+        email: currentUser.email || form.getValues('email') || '',
+        // Reset other fields or keep them as needed
+      });
+    }
+   }, [currentUser, form]);
+
 
   const { fields: experienceFields, append: appendExperience, remove: removeExperience } = useFieldArray({
     control: form.control,
@@ -166,19 +183,29 @@ export default function Home() {
 
   function onSubmit(values: CvFormData) {
     // Handle final CV submission/saving logic here
-    console.log(values);
+    // TODO: Save CV data to Firestore under users/{uid}/cvs/{cvId}
+    console.log('CV Data:', values);
+    console.log('User UID:', currentUser?.uid); // Log UID for debugging Firestore path
     toast({
-      title: 'تم الحفظ',
-      description: 'تم حفظ بيانات السيرة الذاتية (مؤقتًا في الكونسول).',
+      title: 'تم الحفظ (مؤقتًا)',
+      description: 'تم حفظ بيانات السيرة الذاتية في الكونسول. سيتم قريباً حفظها في قاعدة البيانات.',
     });
     // In a real app, you'd save this to Firestore or generate a PDF
   }
 
   return (
-    <div className="container mx-auto p-4 md:p-8">
-      <header className="mb-8 text-center">
-        <h1 className="text-3xl font-bold text-primary mb-2">صانع السيرة الذاتية العربي</h1>
-        <p className="text-muted-foreground">أنشئ سيرتك الذاتية الاحترافية بسهولة مع تحسينات الذكاء الاصطناعي</p>
+     <div className="container mx-auto p-4 md:p-8">
+      <header className="mb-8 flex justify-between items-center">
+        <div className="text-center flex-grow">
+          <h1 className="text-3xl font-bold text-primary mb-2">صانع السيرة الذاتية العربي</h1>
+          <p className="text-muted-foreground">أنشئ سيرتك الذاتية الاحترافية بسهولة مع تحسينات الذكاء الاصطناعي</p>
+        </div>
+         {currentUser && (
+            <Button variant="ghost" onClick={signOut} size="sm">
+                <LogOut className="ml-2 h-4 w-4" />
+                تسجيل الخروج
+            </Button>
+         )}
       </header>
 
       <Form {...form}>
@@ -223,8 +250,10 @@ export default function Home() {
                       <FormItem>
                         <FormLabel>البريد الإلكتروني</FormLabel>
                         <FormControl>
-                          <Input type="email" placeholder="example@mail.com" {...field} />
+                           {/* Make email read-only if logged in */}
+                          <Input type="email" placeholder="example@mail.com" {...field} readOnly={!!currentUser} className={currentUser ? 'cursor-not-allowed opacity-70' : ''}/>
                         </FormControl>
+                         {currentUser && <FormDescription>لا يمكن تغيير البريد الإلكتروني بعد تسجيل الدخول.</FormDescription>}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -564,5 +593,15 @@ export default function Home() {
         </form>
       </Form>
     </div>
+  );
+}
+
+
+export default function Home() {
+  // Wrap the CV builder content with ProtectedRoute
+  return (
+    <ProtectedRoute>
+      <CvBuilderPageContent />
+    </ProtectedRoute>
   );
 }

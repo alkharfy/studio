@@ -3,6 +3,7 @@ import { Cairo } from 'next/font/google'; // Import Cairo font
 import './globals.css';
 import { cn } from '@/lib/utils';
 import { Toaster } from '@/components/ui/toaster'; // Import Toaster
+import { AuthProvider } from '@/context/AuthContext'; // Import AuthProvider
 
 // Configure Cairo font
 const cairo = Cairo({
@@ -29,8 +30,10 @@ export default function RootLayout({
           cairo.variable // Apply Cairo font variable
         )}
       >
-        {children}
-        <Toaster /> {/* Add Toaster component */}
+         <AuthProvider> {/* Wrap children with AuthProvider */}
+            {children}
+            <Toaster /> {/* Add Toaster component */}
+        </AuthProvider>
       </body>
     </html>
   );
