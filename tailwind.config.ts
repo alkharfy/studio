@@ -66,6 +66,9 @@ export default {
   			md: 'calc(var(--radius) - 2px)',
   			sm: 'calc(var(--radius) - 4px)'
   		},
+        fontFamily: {
+            sans: ['var(--font-cairo)', 'sans-serif'], // Add Cairo as default sans font
+        },
   		keyframes: {
   			'accordion-down': {
   				from: {
@@ -90,5 +93,8 @@ export default {
   		}
   	}
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [
+      require("tailwindcss-animate"),
+      require('tailwindcss-dir')(), // Add tailwindcss-dir plugin
+    ],
 } satisfies Config;
