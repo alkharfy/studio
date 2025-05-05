@@ -80,7 +80,21 @@ type CvFormData = z.infer<typeof cvSchema>;
   const form = useForm<CvFormData>({
     resolver: zodResolver(cvSchema),
     // Default values are set by the schema or loaded from Firestore
-    defaultValues: cvSchema.parse({}), // Initialize with default schema values
+    // Provide initial empty strings for required fields to satisfy Zod schema
+    defaultValues: {
+        title: 'مسودة السيرة الذاتية',
+        fullName: '',
+        jobTitle: '',
+        email: '',
+        phone: '',
+        summary: '',
+        address: null,
+        experience: [],
+        education: [],
+        skills: [],
+        jobDescriptionForAI: null,
+        resumeId: undefined,
+    },
     mode: 'onChange', // Validate on change
   });
 
@@ -97,25 +111,37 @@ type CvFormData = z.infer<typeof cvSchema>;
             const cvData = cvDoc.data() as Resume;
 
              // Ensure arrays are not undefined before resetting
-             const formData: CvFormData = {
-                ...cvSchema.parse({ // Parse to ensure defaults and structure
-                    ...cvData,
-                    experience: cvData.experience || [],
-                    education: cvData.education || [],
-                    skills: cvData.skills || [],
-                }),
+             // Use schema parse to ensure data conforms and defaults are applied
+             const formData = cvSchema.parse({
+                ...cvData.personalInfo, // Spread personalInfo
+                title: cvData.title || 'مسودة السيرة الذاتية',
+                summary: cvData.summary || '',
+                experience: cvData.experience || [],
+                education: cvData.education || [],
+                skills: cvData.skills || [],
+                jobDescriptionForAI: null, // Reset AI field on load
                 resumeId: cvDoc.id, // Store the loaded document ID
-             };
+             });
 
             form.reset(formData);
             console.log("Loaded CV:", cvDoc.id, formData);
         } else {
             // No existing CV, reset with defaults and user info
              console.log("No existing CV found, using defaults.");
-            form.reset({
-                ...cvSchema.parse({}), // Reset to default schema values
-                fullName: currentUser?.displayName || '',
-                email: currentUser?.email || '',
+             // Reset with schema defaults + user info
+             form.reset({
+                 title: 'مسودة السيرة الذاتية',
+                 fullName: currentUser?.displayName || '',
+                 jobTitle: '', // No default job title
+                 email: currentUser?.email || '',
+                 phone: '', // No default phone
+                 address: null,
+                 summary: '', // No default summary
+                 experience: [],
+                 education: [],
+                 skills: [],
+                 jobDescriptionForAI: null,
+                 resumeId: undefined,
             });
         }
     } catch (error) {
@@ -126,10 +152,19 @@ type CvFormData = z.infer<typeof cvSchema>;
             variant: 'destructive',
         });
         // Reset with defaults on error
-        form.reset({
-             ...cvSchema.parse({}),
-             fullName: currentUser?.displayName || '',
-             email: currentUser?.email || '',
+         form.reset({
+            title: 'مسودة السيرة الذاتية',
+            fullName: currentUser?.displayName || '',
+            jobTitle: '',
+            email: currentUser?.email || '',
+            phone: '',
+            address: null,
+            summary: '',
+            experience: [],
+            education: [],
+            skills: [],
+            jobDescriptionForAI: null,
+            resumeId: undefined,
         });
     } finally {
         setIsLoadingCv(false);
@@ -145,7 +180,20 @@ type CvFormData = z.infer<typeof cvSchema>;
           // Handle case where user is not logged in (e.g., clear form or show login prompt)
           // For now, we just ensure loading is false if there's no user
           setIsLoadingCv(false);
-           form.reset(cvSchema.parse({})); // Reset to defaults if no user
+           form.reset({ // Reset to empty defaults if no user
+                title: 'مسودة السيرة الذاتية',
+                fullName: '',
+                jobTitle: '',
+                email: '',
+                phone: '',
+                summary: '',
+                address: null,
+                experience: [],
+                education: [],
+                skills: [],
+                jobDescriptionForAI: null,
+                resumeId: undefined,
+           });
       }
    }, [currentUser, loadMostRecentCv, form]); // Load when user changes
 
@@ -239,29 +287,27 @@ type CvFormData = z.infer<typeof cvSchema>;
    const handlePdfParsingComplete = (parsedData: Partial<Resume>) => {
      console.log("Received parsed data:", parsedData);
      // Merge parsed data with existing form data, prioritizing parsed data
-     // Ensure arrays are handled correctly (replace or merge based on preference)
      // Use schema validation/parsing to ensure data integrity
      try {
        const currentValues = form.getValues();
-       const mergedData = cvSchema.parse({
-           ...currentValues, // Keep existing values like title, email, etc.
-           ...parsedData, // Overwrite with parsed data where available
-           resumeId: currentValues.resumeId, // Preserve current resume ID if editing
-           // Ensure arrays are replaced, not merged weirdly
-           experience: parsedData.experience || currentValues.experience || [],
-           education: parsedData.education || currentValues.education || [],
-           skills: parsedData.skills || currentValues.skills || [],
-           // Ensure optional fields are handled
-           address: parsedData.personalInfo?.address ?? currentValues.address,
-           phone: parsedData.personalInfo?.phone ?? currentValues.phone,
-           jobTitle: parsedData.personalInfo?.jobTitle ?? currentValues.jobTitle,
-           fullName: parsedData.personalInfo?.fullName ?? currentValues.fullName,
-           summary: parsedData.summary ?? currentValues.summary,
-           // Make sure email is not overwritten if user is logged in
-           email: currentUser?.email || parsedData.personalInfo?.email || currentValues.email,
-           // Clear the AI job description field after parsing? Optional.
-           // jobDescriptionForAI: '',
-       });
+        // Prepare data for parsing, ensuring required fields from parsedData or currentUser exist
+        const dataToParse = {
+            title: parsedData.title || currentValues.title || 'مسودة مستخرجة', // Provide a default title
+            fullName: parsedData.personalInfo?.fullName ?? currentValues.fullName ?? currentUser?.displayName ?? '',
+            jobTitle: parsedData.personalInfo?.jobTitle ?? currentValues.jobTitle ?? '',
+            email: currentUser?.email || parsedData.personalInfo?.email || currentValues.email || '', // Prioritize logged-in user email
+            phone: parsedData.personalInfo?.phone ?? currentValues.phone ?? '',
+            address: parsedData.personalInfo?.address ?? currentValues.address ?? null,
+            summary: parsedData.summary ?? currentValues.summary ?? '',
+            experience: parsedData.experience || currentValues.experience || [],
+            education: parsedData.education || currentValues.education || [],
+            skills: parsedData.skills || currentValues.skills || [],
+            jobDescriptionForAI: currentValues.jobDescriptionForAI, // Keep existing AI description
+            resumeId: currentValues.resumeId, // Preserve current resume ID if editing
+        };
+
+       const mergedData = cvSchema.parse(dataToParse);
+
          form.reset(mergedData);
          toast({
              title: "تم ملء النموذج",
@@ -271,7 +317,7 @@ type CvFormData = z.infer<typeof cvSchema>;
          console.error("Error merging parsed data:", error);
          toast({
              title: "خطأ في البيانات",
-             description: "حدث خطأ أثناء دمج البيانات المستخرجة. قد تحتاج إلى إدخالها يدويًا.",
+             description: `حدث خطأ أثناء دمج البيانات المستخرجة. ${error instanceof z.ZodError ? error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') : 'قد تحتاج إلى إدخالها يدويًا.'}`,
              variant: "destructive",
          });
      }
@@ -453,11 +499,12 @@ type CvFormData = z.infer<typeof cvSchema>;
               <FormField
                 control={form.control}
                 name="address"
-                render={({ field }) => (
+                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>العنوان (اختياري)</FormLabel>
                     <FormControl>
-                      <Input placeholder="مثال: الرياض، المملكة العربية السعودية" {...field} />
+                      {/* Handle null value */}
+                      <Input placeholder="مثال: الرياض، المملكة العربية السعودية" {...field} value={field.value ?? ''} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -597,10 +644,11 @@ type CvFormData = z.infer<typeof cvSchema>;
                           <FormField
                             control={form.control}
                             name={`experience.${index}.endDate`}
-                            render={({ field }) => (
+                             render={({ field }) => (
                               <FormItem>
                                 <FormLabel>تاريخ الانتهاء (اتركه فارغًا للحالي)</FormLabel>
                                 <FormControl>
+                                   {/* Handle null value */}
                                   <Input placeholder="مثال: ديسمبر 2022" {...field} value={field.value ?? ''} />
                                 </FormControl>
                                 <FormMessage />
@@ -611,14 +659,15 @@ type CvFormData = z.infer<typeof cvSchema>;
                      <FormField
                       control={form.control}
                       name={`experience.${index}.description`}
-                      render={({ field }) => (
+                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>الوصف (اختياري)</FormLabel>
                           <FormControl>
                              <Textarea
                                 placeholder="صف مهامك وإنجازاتك الرئيسية..."
                                 {...field}
-                                value={field.value ?? ''} // Handle null
+                                // Handle null value by providing empty string if null/undefined
+                                value={field.value ?? ''}
                                 />
                           </FormControl>
                           <FormMessage />
@@ -703,14 +752,15 @@ type CvFormData = z.infer<typeof cvSchema>;
                   <FormField
                     control={form.control}
                     name={`education.${index}.details`}
-                    render={({ field }) => (
+                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>تفاصيل إضافية (اختياري)</FormLabel>
                         <FormControl>
                            <Textarea
                             placeholder="مثال: مشروع التخرج، مرتبة الشرف..."
                             {...field}
-                            value={field.value ?? ''} // Handle null
+                             // Handle null value
+                             value={field.value ?? ''}
                             />
                         </FormControl>
                         <FormMessage />
@@ -806,6 +856,5 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
-
 
     
