@@ -4,11 +4,11 @@
 import * as React from 'react';
 import { useState, useCallback } from 'react'; // Added useCallback
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, useFieldArray, type UseFormReturn } from 'react-hook-form';
+import { useForm, useFieldArray, type UseFormReturn, useFormContext } from 'react-hook-form';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import {
-  Form,
+  Form, // Keep Form import for the component structure
   FormControl,
   FormField,
   FormItem,
@@ -68,7 +68,7 @@ export const cvSchema = z.object({
 export type CvFormData = z.infer<typeof cvSchema>;
 
 interface CvFormProps {
-  form: UseFormReturn<CvFormData>; // Accept form instance as a prop
+  // REMOVED: form: UseFormReturn<CvFormData>; // Accept form instance as a prop
   isLoadingCv: boolean;
   handlePdfParsingComplete: (parsedData: Partial<FirestoreResumeData>) => void;
 }
@@ -123,7 +123,9 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
 // --- End Normalization Function ---
 
 
-export function CvForm({ form, isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
+// Use useFormContext to get the form instance from the parent provider
+export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
+  const form = useFormContext<CvFormData>(); // Get form instance from context
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const { toast } = useToast();
@@ -247,9 +249,9 @@ export function CvForm({ form, isLoadingCv, handlePdfParsingComplete }: CvFormPr
                 skills: values.skills.map(skill => ({
                     name: skill.name || null,
                  })).filter(skill => skill.name),
-                 languages: [],
-                 hobbies: [],
-                 customSections: [],
+                 languages: [], // Use null or actual data if available in form
+                 hobbies: [], // Use null or actual data if available in form
+                 customSections: [], // Use null or actual data if available in form
                  updatedAt: serverTimestamp(),
           };
 
@@ -263,13 +265,20 @@ export function CvForm({ form, isLoadingCv, handlePdfParsingComplete }: CvFormPr
                const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
                docRef = doc(resumesCollectionRef);
                resumeDataToSave.resumeId = docRef.id;
-               (resumeDataToSave as any).createdAt = serverTimestamp();
-               const fullDataToSave = {
+               // Add fields required for a new document according to FirestoreResumeData
+               const fullDataToSave: FirestoreResumeData = {
                    ...resumeDataToSave,
-                   parsingDone: false,
+                   parsingDone: false, // Assuming parsing is not done on manual save
                    originalFileName: null,
                    storagePath: null,
-               }
+                   createdAt: serverTimestamp(), // Set createdAt only for new docs
+                   updatedAt: resumeDataToSave.updatedAt, // Already set
+                   // Ensure all required fields from Resume interface are present
+                   // or provide default values (like empty arrays or null)
+                   languages: resumeDataToSave.languages ?? [],
+                   hobbies: resumeDataToSave.hobbies ?? [],
+                   customSections: resumeDataToSave.customSections ?? [],
+               };
                await setDoc(docRef, fullDataToSave);
                form.setValue('resumeId', docRef.id);
                toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية بنجاح.' });
@@ -302,14 +311,16 @@ export function CvForm({ form, isLoadingCv, handlePdfParsingComplete }: CvFormPr
   const resumeId = form.watch('resumeId');
 
   return (
-      // Removed redundant container div, Form provider is outside now
-      <Form {...form}>
-         {/* PDF Uploader Section */}
+      // REMOVED FormProvider wrapper
+         // PDF Uploader Section
          <div className="mb-8 px-4"> {/* Add padding */}
             <PdfUploader onParsingComplete={handlePdfParsingComplete} />
          </div>
 
-         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8 p-4"> {/* Add padding */}
+         <form
+           onSubmit={form.handleSubmit(onSubmit)}
+           className="space-y-8 p-4"  // Reordered classname and onsubmit
+         >
            {/* Personal Information Section */}
            <Card>
              <CardHeader>
@@ -704,10 +715,10 @@ export function CvForm({ form, isLoadingCv, handlePdfParsingComplete }: CvFormPr
            <div className="flex justify-end pb-4"> {/* Add padding bottom */}
              <Button type="submit" size="lg" className="bg-primary hover:bg-primary/90" disabled={isSaving}>
                 {isSaving ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Save className="ml-2 h-4 w-4" />}
-               {isSaving ? 'جاري الحفظ...' : (resumeId ? 'تحديث السيرة الذاتية' : 'حفظ السيرة الذاتية')}
+               {isSaving ? 'جاري الحفظ...' : (form.watch('resumeId') ? 'تحديث السيرة الذاتية' : 'حفظ السيرة الذاتية')}
              </Button>
            </div>
          </form>
-       </Form>
   );
 }
+

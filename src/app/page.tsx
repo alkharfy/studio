@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as React from 'react';
@@ -221,8 +220,8 @@ function CvBuilderPageContent() {
             )}
         </header>
 
-        {/* Main Content Area (Flex row with RTL reverse) */}
-        <main className="flex-1 flex flex-row rtl:flex-row-reverse gap-4 p-4 overflow-hidden">
+        {/* Main Content Area (Flex row with RTL reverse on lg+, column-reverse on smaller) */}
+        <main className="flex-1 flex flex-col-reverse lg:flex-row lg:rtl:flex-row-reverse gap-4 p-4 overflow-hidden">
 
             {/* Left Pane (Preview) - Takes remaining space */}
             {/* Force LTR direction for the preview content itself */}
@@ -234,18 +233,19 @@ function CvBuilderPageContent() {
                 <CvPreview data={currentFormData} />
             </section>
 
-            {/* Right Pane (Form) - Fixed width */}
+            {/* Right Pane (Form) - Fixed width on lg+, full width on smaller */}
             <section
-                className="w-[35%] min-w-[340px] bg-white rounded-lg shadow-md overflow-y-auto hide-scrollbar"
+                className="w-full min-w-0 lg:w-[35%] lg:min-w-[340px] bg-white rounded-lg shadow-md overflow-y-auto hide-scrollbar"
                 // No specific padding here, handled by CvForm's internal padding
             >
-                {/* Pass form instance and handlers to the form component */}
-                 <CvForm
-                     form={form}
-                     isLoadingCv={isLoadingCv}
-                     // Pass the unified update function, PDF uploader calls it with source 'pdf'
-                     handlePdfParsingComplete={(data) => updateFormWithData(data, 'pdf')}
-                  />
+                 {/* Wrap CvForm in the FormProvider */}
+                 <Form {...form}>
+                     <CvForm
+                         isLoadingCv={isLoadingCv}
+                         // Pass the unified update function, PDF uploader calls it with source 'pdf'
+                         handlePdfParsingComplete={(data) => updateFormWithData(data, 'pdf')}
+                      />
+                 </Form>
             </section>
         </main>
     </div>
@@ -260,3 +260,5 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
+
+    
