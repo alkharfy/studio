@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Upload, FileText, Check, X } from 'lucide-react';
 import type { Resume } from '@/lib/dbTypes'; // Import Resume type
+import { Label } from "@/components/ui/label"; // Import Label component
 
 // Define the expected structure of parsed data (adjust based on actual AI output)
 // This is just an example placeholder
@@ -275,5 +276,6 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
     </Card>
   );
 }
+
 
     
