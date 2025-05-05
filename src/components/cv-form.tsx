@@ -8,7 +8,7 @@ import { useForm, useFieldArray, type UseFormReturn, useFormContext } from 'reac
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import {
-  Form, // Keep Form import for the component structure
+  // Form, // Correctly REMOVED as context is provided by parent
   FormControl,
   FormField,
   FormItem,
@@ -68,7 +68,6 @@ export const cvSchema = z.object({
 export type CvFormData = z.infer<typeof cvSchema>;
 
 interface CvFormProps {
-  // REMOVED: form: UseFormReturn<CvFormData>; // Accept form instance as a prop
   isLoadingCv: boolean;
   handlePdfParsingComplete: (parsedData: Partial<FirestoreResumeData>) => void;
 }
@@ -92,31 +91,46 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
 
     if (!raw) return defaults;
 
+    // Map Firestore data (uses institute, year, title, start, end) to form data (institution, graduationYear, jobTitle, startDate, endDate)
     return {
         resumeId: raw.resumeId,
         title: raw.title ?? defaults.title,
         fullName: raw.personalInfo?.fullName ?? defaults.fullName,
+        // Map personalInfo.title to form's jobTitle
         jobTitle: raw.personalInfo?.jobTitle ?? defaults.jobTitle,
         email: raw.personalInfo?.email ?? currentUser?.email ?? defaults.email,
         phone: raw.personalInfo?.phone ?? defaults.phone,
         address: raw.personalInfo?.address ?? defaults.address,
+        // Map objective to summary if summary is missing
         summary: raw.summary ?? defaults.summary,
+        // Map education fields
         education: (raw.education ?? []).map(edu => ({
             degree: edu.degree ?? '',
+            // Map institute to institution
             institution: edu.institution ?? '',
+            // Map year to graduationYear
             graduationYear: edu.graduationYear ?? '',
-            details: edu.details ?? null,
-        })),
+            details: edu.details ?? null, // Keep details
+        })).filter(edu => edu.degree || edu.institution || edu.graduationYear), // Filter empty entries
+        // Map experience fields
         experience: (raw.experience ?? []).map(exp => ({
+            // Map title to jobTitle
             jobTitle: exp.jobTitle ?? '',
             company: exp.company ?? '',
+            // Map start to startDate
             startDate: exp.startDate ?? '',
+            // Map end to endDate
             endDate: exp.endDate ?? null,
             description: exp.description ?? null,
-        })),
+        })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description), // Filter empty entries
+        // Map skills (handle both string[] and {name: string}[])
         skills: (raw.skills ?? []).map(skill => ({
-            name: skill.name ?? '',
-        })),
+             // If skill is a string, use it; otherwise, use skill.name
+            name: typeof skill === 'string' ? skill : (skill.name ?? ''),
+        })).filter(skill => skill.name), // Filter empty entries
+        // Ensure languages and hobbies are handled if they exist in FirestoreResumeData
+        // languages: (raw.languages ?? []).map(lang => ({ name: lang.name ?? '', level: lang.level ?? '' })), // Example if complex
+        // hobbies: (raw.hobbies ?? []), // Example if simple string array
         jobDescriptionForAI: defaults.jobDescriptionForAI,
     };
 };
@@ -214,88 +228,99 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
     }
   };
 
-  async function onSubmit(values: CvFormData) {
-      if (!currentUser) {
-          toast({ title: 'خطأ', description: 'يجب تسجيل الدخول لحفظ السيرة الذاتية.', variant: 'destructive' });
-          return;
-      }
-      setIsSaving(true);
-      try {
-          const resumeDataToSave: Omit<FirestoreResumeData, 'createdAt' | 'updatedAt' | 'parsingDone' | 'originalFileName' | 'storagePath'> & { updatedAt: any, createdAt?: any } = {
+    async function onSubmit(values: CvFormData) {
+        if (!currentUser) {
+            toast({ title: 'خطأ', description: 'يجب تسجيل الدخول لحفظ السيرة الذاتية.', variant: 'destructive' });
+            return;
+        }
+        setIsSaving(true);
+        try {
+            // Map form data (CvFormData) back to Firestore structure (FirestoreResumeData)
+            // Note: FirestoreResumeData now includes languages, hobbies, customSections based on dbTypes
+            const resumeDataToSave: Omit<FirestoreResumeData, 'createdAt' | 'updatedAt' | 'parsingDone' | 'originalFileName' | 'storagePath'> & { updatedAt: any, createdAt?: any } = {
                 userId: currentUser.uid,
-                resumeId: values.resumeId || '',
+                resumeId: values.resumeId || '', // Keep existing ID or empty string for new doc
                 title: values.title,
                 personalInfo: {
                     fullName: values.fullName,
-                    jobTitle: values.jobTitle,
+                    jobTitle: values.jobTitle, // Ensure jobTitle is mapped
                     email: values.email,
                     phone: values.phone,
                     address: values.address,
                 },
-                summary: values.summary,
-                experience: values.experience.map(exp => ({
-                    jobTitle: exp.jobTitle || null,
-                    company: exp.company || null,
-                    startDate: exp.startDate || null,
-                    endDate: exp.endDate || null,
-                    description: exp.description || null,
-                })).filter(exp => exp.jobTitle || exp.company),
+                summary: values.summary, // Map form's summary
+                // Map education fields back to Firestore structure
                 education: values.education.map(edu => ({
                     degree: edu.degree || null,
-                    institution: edu.institution || null,
-                    graduationYear: edu.graduationYear || null,
+                    institution: edu.institution || null, // Map institution back
+                    graduationYear: edu.graduationYear || null, // Map graduationYear back
                     details: edu.details || null,
-                })).filter(edu => edu.degree || edu.institution),
+                })).filter(edu => edu.degree || edu.institution || edu.graduationYear),
+                 // Map experience fields back to Firestore structure
+                experience: values.experience.map(exp => ({
+                    jobTitle: exp.jobTitle || null, // Map jobTitle back
+                    company: exp.company || null,
+                    startDate: exp.startDate || null, // Map startDate back
+                    endDate: exp.endDate || null, // Map endDate back
+                    description: exp.description || null,
+                })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description),
+                // Map skills back to Firestore structure {name: string | null}[]
                 skills: values.skills.map(skill => ({
                     name: skill.name || null,
-                 })).filter(skill => skill.name),
-                 languages: [], // Use null or actual data if available in form
-                 hobbies: [], // Use null or actual data if available in form
-                 customSections: [], // Use null or actual data if available in form
-                 updatedAt: serverTimestamp(),
-          };
+                })).filter(skill => skill.name),
+                // Provide default empty arrays or null for fields not in the form
+                languages: [], // TODO: Add form fields if languages need saving
+                hobbies: [], // TODO: Add form fields if hobbies need saving
+                customSections: [], // TODO: Add form fields if custom sections need saving
+                updatedAt: serverTimestamp(),
+            };
 
-           let docRef;
-           if (values.resumeId) {
-               docRef = doc(db, 'users', currentUser.uid, 'resumes', values.resumeId);
-               await updateDoc(docRef, resumeDataToSave);
-               toast({ title: 'تم التحديث', description: 'تم تحديث سيرتك الذاتية بنجاح.' });
-               console.log('CV Updated:', values.resumeId);
-           } else {
-               const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
-               docRef = doc(resumesCollectionRef);
-               resumeDataToSave.resumeId = docRef.id;
-               // Add fields required for a new document according to FirestoreResumeData
-               const fullDataToSave: FirestoreResumeData = {
-                   ...resumeDataToSave,
-                   parsingDone: false, // Assuming parsing is not done on manual save
-                   originalFileName: null,
-                   storagePath: null,
-                   createdAt: serverTimestamp(), // Set createdAt only for new docs
-                   updatedAt: resumeDataToSave.updatedAt, // Already set
-                   // Ensure all required fields from Resume interface are present
-                   // or provide default values (like empty arrays or null)
-                   languages: resumeDataToSave.languages ?? [],
-                   hobbies: resumeDataToSave.hobbies ?? [],
-                   customSections: resumeDataToSave.customSections ?? [],
-               };
-               await setDoc(docRef, fullDataToSave);
-               form.setValue('resumeId', docRef.id);
-               toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية بنجاح.' });
-               console.log('CV Saved:', docRef.id);
-           }
+            let docRef;
+            if (values.resumeId) {
+                // --- Update existing document ---
+                docRef = doc(db, 'users', currentUser.uid, 'resumes', values.resumeId);
+                 // Ensure all fields expected by updateDoc are present (especially 'updatedAt')
+                 // We can directly use resumeDataToSave here as it includes 'updatedAt'
+                await updateDoc(docRef, resumeDataToSave);
+                toast({ title: 'تم التحديث', description: 'تم تحديث سيرتك الذاتية بنجاح.' });
+                console.log('CV Updated:', values.resumeId);
+            } else {
+                 // --- Create new document ---
+                const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
+                docRef = doc(resumesCollectionRef); // Generate a new document reference WITH an ID
+                resumeDataToSave.resumeId = docRef.id; // Assign the generated ID to the data
 
-      } catch (error) {
-          console.error('Error saving CV:', error);
-          toast({
-              title: 'خطأ في الحفظ',
-              description: 'لم نتمكن من حفظ السيرة الذاتية. الرجاء المحاولة مرة أخرى.',
-              variant: 'destructive',
-          });
-      } finally {
-          setIsSaving(false);
-      }
-  }
+                // Create the full FirestoreResumeData object for setDoc
+                const fullDataToSave: FirestoreResumeData = {
+                    ...resumeDataToSave,
+                    parsingDone: false, // Default for manual save
+                    originalFileName: null, // Not applicable for manual save
+                    storagePath: null, // Not applicable for manual save
+                    createdAt: serverTimestamp(), // Add server timestamp for creation
+                     // Ensure all required fields from FirestoreResumeData are present or provide defaults
+                    languages: resumeDataToSave.languages ?? [],
+                    hobbies: resumeDataToSave.hobbies ?? [],
+                    customSections: resumeDataToSave.customSections ?? [],
+                     // Include userId and resumeId which are now part of resumeDataToSave
+                };
+
+                await setDoc(docRef, fullDataToSave); // Use setDoc with the reference containing the ID
+                form.setValue('resumeId', docRef.id); // Update the form state with the new ID
+                toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية بنجاح.' });
+                console.log('CV Saved with new ID:', docRef.id);
+            }
+
+        } catch (error) {
+            console.error('Error saving CV:', error);
+            toast({
+                title: 'خطأ في الحفظ',
+                description: 'لم نتمكن من حفظ السيرة الذاتية. الرجاء المحاولة مرة أخرى.',
+                variant: 'destructive',
+            });
+        } finally {
+            setIsSaving(false);
+        }
+    }
 
   // Display loading indicator while fetching CV data
   if (isLoadingCv) {
@@ -311,15 +336,17 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
   const resumeId = form.watch('resumeId');
 
   return (
-      // REMOVED FormProvider wrapper
-         // PDF Uploader Section
-         <div className="mb-8 px-4"> {/* Add padding */}
+      // Container div for padding and layout control
+      <div className="p-4">
+          {/* PDF Uploader Section */}
+         <div className="mb-8"> {/* Add margin bottom */}
             <PdfUploader onParsingComplete={handlePdfParsingComplete} />
          </div>
 
-         <form           
-           className="space-y-8 p-4"
-           onSubmit={form.handleSubmit(onSubmit)}  // Reordered classname and onsubmit
+         {/* Form element with correct props */}
+         <form
+           className="space-y-8"
+           onSubmit={form.handleSubmit(onSubmit)}
          >
            {/* Personal Information Section */}
            <Card>
@@ -719,6 +746,6 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
              </Button>
            </div>
          </form>
+    </div> // Close the container div
   );
 }
-
