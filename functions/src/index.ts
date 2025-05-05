@@ -23,6 +23,7 @@ const generativeModel = vertexAI.getGenerativeModel({
 
 // Define the structure for the data we want to store in Firestore.
 // This should align with src/lib/dbTypes.ts (but uses Firestore Admin types)
+// Note: The prompt below will reference these fields.
 interface ResumeFirestoreData {
   resumeId: string;
   userId: string;
@@ -75,6 +76,7 @@ export const parseResumePdf = functions.runWith({
     const filePath = object.name;
     const contentType = object.contentType;
     const bucketName = object.bucket;
+    const objectMetadata = object.metadata; // Get metadata for custom user ID
 
     functions.logger.log(`Processing file: ${filePath} in bucket: ${bucketName}`);
 
@@ -83,15 +85,34 @@ export const parseResumePdf = functions.runWith({
       return;
     }
 
+    // --- Get User ID ---
+    // Option 1: Extract from path (as before) - less reliable if path structure changes
     const pathParts = filePath?.split("/");
-    if (!pathParts || pathParts.length < 3 || pathParts[0] !== "resumes_uploads") {
-      functions.logger.warn(`File ${filePath} is not in the expected 'resumes_uploads/{uid}/' directory. Exiting.`);
-      return;
+    let uidFromPath: string | undefined;
+    if (pathParts && pathParts.length >= 3 && pathParts[0] === "resumes_uploads") {
+      uidFromPath = pathParts[1];
+      functions.logger.log(`Extracted UID from path: ${uidFromPath}`);
     }
 
-    const uid = pathParts[1];
-    const fileName = pathParts[pathParts.length - 1];
-    functions.logger.log(`Extracted UID: ${uid}, FileName: ${fileName}`);
+    // Option 2: Try getting from custom metadata (preferred)
+    const uidFromMetadata = objectMetadata?.uid; // Assuming 'uid' key is set during upload
+    if (uidFromMetadata) {
+      functions.logger.log(`Found UID in metadata: ${uidFromMetadata}`);
+    }
+
+    // Prioritize metadata UID if available, otherwise fallback to path UID
+    const uid = uidFromMetadata || uidFromPath;
+
+    if (!uid) {
+      functions.logger.error(`Could not determine UID for file ${filePath}. Missing from path and metadata. Exiting.`);
+      return;
+    }
+    functions.logger.log(`Using UID: ${uid}`);
+    // --- End Get User ID ---
+
+
+    const fileName = pathParts ? pathParts[pathParts.length - 1] : "unknown_file.pdf"; // Handle potential path issue
+    functions.logger.log(`Using FileName: ${fileName}`);
 
     // Use lowercase key for config access
     const processorId = functions.config().cv?.docprocessorid;
@@ -140,9 +161,13 @@ export const parseResumePdf = functions.runWith({
       if (result.document?.text) {
         documentText = result.document.text;
         functions.logger.log(`Extracted text length: ${documentText.length} characters.`);
-        functions.logger.debug("Extracted text sample:", documentText.substring(0, 500));
+        // Log only the first 500 chars for brevity and privacy
+        functions.logger.debug("Extracted text sample (first 500 chars):", documentText.substring(0, 500));
       } else {
         functions.logger.warn("Document AI processed the file but found no text.");
+        // Decide if to proceed with empty text or exit
+        // Proceeding allows creating a basic Firestore doc, exiting might be better?
+        // Let's exit for now, as no text means no useful extraction.
         return;
       }
     } catch (err: any) {
@@ -151,19 +176,45 @@ export const parseResumePdf = functions.runWith({
       return;
     }
 
-    // Updated prompt to match Firestore structure (using 'summary' instead of 'objective', 'institution' instead of 'institute', etc.)
+    // --- Updated Vertex AI Prompt ---
+    // Explicitly ask for JSON matching the target structure.
      const prompt = `
-        Extract the following résumé fields strictly in JSON format from the provided text. Maintain Arabic labels and values where present in the original text. If a field is not found, omit it or use null. Ensure valid JSON output.
+        Extract information from the following résumé text. Return a valid JSON object *exactly* matching this TypeScript type structure:
 
-        Fields to extract:
-        - personalInfo: { fullName, jobTitle, email, phone, address }
-        - summary: string (also called objective or profile)
-        - education: array of { degree, institution, graduationYear, details }
-        - experience: array of { jobTitle, company, startDate, endDate, description }
-        - skills: array of { name: string }
-        - languages: array of strings
-        - hobbies: array of strings
-        - customSections: array of { title, content } (for any other sections not listed above)
+        type OutputStructure = {
+          personalInfo: {
+            fullName: string | null;
+            jobTitle: string | null;
+            email: string | null;
+            phone: string | null;
+            address: string | null;
+          } | null;
+          summary: string | null; // Also known as objective or profile
+          education: {
+            degree: string | null;
+            institution: string | null;
+            graduationYear: string | null;
+            details: string | null; // e.g., thesis title, honors
+          }[] | null;
+          experience: {
+            jobTitle: string | null;
+            company: string | null;
+            startDate: string | null; // e.g., "Jan 2020", "2020"
+            endDate: string | null; // e.g., "Dec 2022", "Present"
+            description: string | null; // Key responsibilities/achievements
+          }[] | null;
+          skills: { name: string }[] | null; // Array of skill objects
+          languages: string[] | null; // Array of language names
+          hobbies: string[] | null; // Array of hobby names
+          customSections: {
+            title: string | null; // Title of any other section found
+            content: string | null; // Content of that section
+          }[] | null;
+        };
+
+        Maintain Arabic labels and values if they are present in the original résumé text.
+        If a field or section is not found in the text, represent it as 'null' or omit the key-value pair where appropriate (e.g., omit 'address' if not found, use null for 'summary' if not found, use empty array [] for 'experience' if none found).
+        Ensure the final output is ONLY the JSON object, without any introductory text or markdown formatting like \`\`\`json.
 
         Résumé Text:
         \`\`\`
@@ -172,6 +223,7 @@ export const parseResumePdf = functions.runWith({
 
         JSON Output:
         `;
+     // --- End Updated Vertex AI Prompt ---
 
     functions.logger.log("Sending request to Vertex AI (Gemini)...");
     let extractedJson: any = {}; // Use 'any' for initial dynamic structure
@@ -182,18 +234,25 @@ export const parseResumePdf = functions.runWith({
         if (response.candidates && response.candidates.length > 0 && response.candidates[0].content?.parts?.length > 0) {
             let jsonString = response.candidates[0].content.parts[0].text || "";
             functions.logger.log("Vertex AI raw response text received.");
+            // Attempt to clean potential markdown ```json ... ``` markers
             jsonString = jsonString.replace(/^```json\s*|```$/g, "").trim();
 
             try {
                 extractedJson = JSON.parse(jsonString);
-                functions.logger.log("Successfully parsed JSON from Vertex AI:", JSON.stringify(extractedJson, null, 2));
+                functions.logger.log("Successfully parsed JSON from Vertex AI.");
+                // Log the structure for verification, avoid logging potentially large full JSON
+                functions.logger.debug("Parsed JSON Keys:", Object.keys(extractedJson));
             } catch (parseError: any) {
                 functions.logger.error("Failed to parse JSON from Vertex AI response:", parseError);
-                functions.logger.error("Raw Vertex AI Text Response:", jsonString);
+                functions.logger.error("Raw Vertex AI Text Response (trimmed):", jsonString.substring(0, 500)); // Log sample of raw text
+                // Decide how to handle parsing error - maybe create a doc with raw text?
+                // For now, let's exit.
                 return;
             }
         } else {
             functions.logger.warn("Vertex AI response was empty or had no valid content part.");
+             // Handle empty response - maybe create doc with just metadata?
+             // For now, let's exit.
             return;
         }
 
@@ -203,71 +262,77 @@ export const parseResumePdf = functions.runWith({
         return;
     }
 
-    // Use Firestore server timestamp for ID generation
+    // --- Generate Firestore Document ID using Timestamp ---
+    // Generate a unique ID based on the current time. Safer than context timestamp.
     const resumeId = admin.firestore.Timestamp.now().toMillis().toString();
     const firestorePath = `users/${uid}/resumes/${resumeId}`;
     functions.logger.log(`Attempting to write mapped data to Firestore at: ${firestorePath}`);
+    // --- End Generate Firestore Document ID ---
+
 
     // --- Map extractedJson to ResumeFirestoreData structure ---
+    // Use nullish coalescing (??) to provide defaults for missing fields/sections
      const mappedData: ResumeFirestoreData = {
         resumeId: resumeId, // Store ID within the doc
         userId: uid,
-        title: extractedJson.title ?? `مستخرج من ${fileName}`, // Default title if not extracted
-        personalInfo: {
+        title: extractedJson.title ?? `مستخرج من ${fileName}`, // Use extracted title or default
+        personalInfo: { // Ensure personalInfo object exists, even if fields are null
             fullName: extractedJson.personalInfo?.fullName ?? null,
             jobTitle: extractedJson.personalInfo?.jobTitle ?? null,
             email: extractedJson.personalInfo?.email ?? null,
             phone: extractedJson.personalInfo?.phone ?? null,
             address: extractedJson.personalInfo?.address ?? null,
         },
-        summary: extractedJson.summary ?? null, // Use summary field
-        // Map education array, ensuring fields match
+        summary: extractedJson.summary ?? null, // Use summary field (matches prompt)
+        // Map education array, ensuring fields match and handling potential null/undefined array
         education: Array.isArray(extractedJson.education) ? extractedJson.education.map((edu: any) => ({
             degree: edu.degree ?? null,
             institution: edu.institution ?? null, // Use institution
             graduationYear: edu.graduationYear ?? null, // Use graduationYear
             details: edu.details ?? null, // Include details
-        })) : [],
-         // Map experience array, ensuring fields match
+        })) : [], // Default to empty array if not present or not an array
+         // Map experience array, ensuring fields match and handling potential null/undefined array
         experience: Array.isArray(extractedJson.experience) ? extractedJson.experience.map((exp: any) => ({
             jobTitle: exp.jobTitle ?? null, // Use jobTitle
             company: exp.company ?? null,
             startDate: exp.startDate ?? null, // Use startDate
             endDate: exp.endDate ?? null, // Use endDate
             description: exp.description ?? null,
-        })) : [],
+        })) : [], // Default to empty array
          // Map skills array to the expected structure { name: string }
         skills: Array.isArray(extractedJson.skills) ? extractedJson.skills.map((skill: any) => ({
-             // If skills are just strings, map them; otherwise, expect objects
+             // If skills are just strings in the JSON, map them; otherwise, expect objects {name: ...}
              name: typeof skill === 'string' ? skill : (skill?.name ?? null),
-        })) : [],
+        })).filter(skill => skill.name) // Filter out any skills that ended up null
+         : [], // Default to empty array
         // Map languages (assuming Vertex returns array of strings based on prompt)
-        languages: Array.isArray(extractedJson.languages) ? extractedJson.languages : [],
+        languages: Array.isArray(extractedJson.languages) ? extractedJson.languages.filter(lang => typeof lang === 'string') : [], // Ensure only strings
         // Map hobbies (assuming Vertex returns array of strings based on prompt)
-        hobbies: Array.isArray(extractedJson.hobbies) ? extractedJson.hobbies : [],
+        hobbies: Array.isArray(extractedJson.hobbies) ? extractedJson.hobbies.filter(hobby => typeof hobby === 'string') : [], // Ensure only strings
         // Map customSections
         customSections: Array.isArray(extractedJson.customSections) ? extractedJson.customSections.map((section: any) => ({
             title: section.title ?? null,
             content: section.content ?? null,
-        })) : [],
+        })).filter(section => section.title || section.content) // Filter out empty sections
+         : [], // Default to empty array
         // Metadata fields
-        parsingDone: true,
+        parsingDone: true, // Crucial flag for the frontend listener
         originalFileName: fileName,
         storagePath: filePath,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(), // Use server timestamp
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(), // Use server timestamp
      };
      // --- End Mapping ---
 
     try {
       const resumeDocRef = db.doc(firestorePath);
-      // Write the mapped data, not the raw extractedJson
+      // Write the *mapped* data, not the raw extractedJson
       await resumeDocRef.set(mappedData);
-      functions.logger.log(`Successfully wrote mapped data to Firestore: ${firestorePath}`);
-      functions.logger.log(`Firestore document example created at: ${firestorePath}`); // Log example path
+      functions.logger.log(`✅ Successfully wrote mapped data to Firestore: ${firestorePath}`);
+      functions.logger.log(`Firestore document example created at: ${firestorePath}`); // Log example path for verification
 
     } catch (err: any) {
-      functions.logger.error(`Failed to write data to Firestore (${firestorePath}):`, err);
+      functions.logger.error(`❌ Failed to write data to Firestore (${firestorePath}):`, err);
       functions.logger.error("Firestore Write Error Details:", err); // Log full error
     }
  });
