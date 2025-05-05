@@ -395,6 +395,9 @@ type CvFormData = z.infer<typeof cvSchema>;
      );
    }
 
+  // Watch the resumeId field to update the button text
+  const resumeId = form.watch('resumeId');
+
 
   return (
      <div className="container mx-auto p-4 md:p-8">
@@ -837,7 +840,7 @@ type CvFormData = z.infer<typeof cvSchema>;
           <div className="flex justify-end">
             <Button type="submit" size="lg" className="bg-primary hover:bg-primary/90" disabled={isSaving}>
                {isSaving ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Save className="ml-2 h-4 w-4" />}
-              {isSaving ? 'جاري الحفظ...' : (values.resumeId ? 'تحديث السيرة الذاتية' : 'حفظ السيرة الذاتية')}
+              {isSaving ? 'جاري الحفظ...' : (resumeId ? 'تحديث السيرة الذاتية' : 'حفظ السيرة الذاتية')}
             </Button>
              {/* Add Preview/Download button later */}
           </div>
