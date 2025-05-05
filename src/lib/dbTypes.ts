@@ -10,54 +10,55 @@ export interface UserProfile {
   // Add other user profile fields as needed
 }
 
-// Structure matching the Cloud Function's JSON output + Firestore metadata
+// Structure aligning with Firestore data written by the updated Cloud Function
+// and closer to the user's requested interface in the prompt.
 export interface Resume {
   resumeId: string;
-  userId: string; // Link resume back to the user
-  title: string; // Can be set by user or default from function
+  userId: string;
+  title: string;
 
-  personalInfo?: { // Make the whole object optional
+  personalInfo?: { // Keep optional for flexibility
     fullName?: string | null;
-    jobTitle?: string | null;
+    jobTitle?: string | null; // Add jobTitle back if needed in UI
     email?: string | null;
     phone?: string | null;
     address?: string | null;
   } | null;
 
-  summary?: string | null; // Also called objective or profile
+  summary?: string | null; // Keep as 'summary' for consistency with function prompt/output
 
-  education?: { // Make the whole array optional
+  education?: { // Keep optional
     degree?: string | null;
-    institution?: string | null;
-    graduationYear?: string | null; // Keep as string if year only
-    details?: string | null;
+    institution?: string | null; // Renamed from institute for consistency
+    graduationYear?: string | null; // Renamed from year
+    details?: string | null; // Added details field based on function prompt
   }[] | null;
 
-  experience?: { // Make the whole array optional
-    jobTitle?: string | null;
+  experience?: { // Keep optional
+    jobTitle?: string | null; // Renamed from title
     company?: string | null;
-    startDate?: string | null; // Keep as string for flexibility (e.g., "Jan 2020")
-    endDate?: string | null; // Can be null or "Present"
+    startDate?: string | null; // Renamed from start
+    endDate?: string | null; // Renamed from end
     description?: string | null;
   }[] | null;
 
-  skills?: { // Make the whole array optional
+  skills?: { // Array of objects { name: string }
       name?: string | null;
-   }[] | null; // Array of skill objects
+   }[] | null;
 
-  languages?: string[] | null; // Optional array of strings
+  languages?: string[] | null; // Changed back to simple string array based on function prompt
 
-  hobbies?: string[] | null; // Optional array of strings
+  hobbies?: string[] | null;
 
-  customSections?: { // Make the whole array optional
-    title?: string | null; // Title might be missing
+  customSections?: { // Added based on function prompt
+    title?: string | null;
     content?: string | null;
    }[] | null;
 
-  // --- Metadata added by function/client ---
-  parsingDone?: boolean; // Flag from PDF parsing
-  originalFileName?: string | null; // Name of the uploaded PDF
-  storagePath?: string | null; // Path to the PDF in Cloud Storage
-  createdAt: Timestamp; // Added by Firestore
-  updatedAt: Timestamp; // Added by Firestore
+  // --- Metadata ---
+  parsingDone?: boolean;
+  originalFileName?: string | null;
+  storagePath?: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }
