@@ -317,9 +317,9 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
             <PdfUploader onParsingComplete={handlePdfParsingComplete} />
          </div>
 
-         <form
-           onSubmit={form.handleSubmit(onSubmit)}
-           className="space-y-8 p-4"  // Reordered classname and onsubmit
+         <form           
+           className="space-y-8 p-4"
+           onSubmit={form.handleSubmit(onSubmit)}  // Reordered classname and onsubmit
          >
            {/* Personal Information Section */}
            <Card>
@@ -721,4 +721,3 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
          </form>
   );
 }
-
