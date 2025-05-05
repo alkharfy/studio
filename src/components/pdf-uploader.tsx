@@ -4,9 +4,10 @@
 import * as React from 'react';
 import { useState } from 'react';
 import { ref, uploadBytesResumable, getDownloadURL, type StorageError } from 'firebase/storage';
-import { doc, setDoc, serverTimestamp, collection, Timestamp } from 'firebase/firestore'; // Import Timestamp
+// Removed Firestore imports (setDoc, serverTimestamp) as the client no longer simulates writing
+// import { doc, setDoc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
 import { useAuth } from '@/context/AuthContext';
-import { storage, db } from '@/lib/firebase/config'; // Import storage and db
+import { storage, db } from '@/lib/firebase/config'; // Keep db import for potential future listener implementation
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -18,14 +19,30 @@ import { Label } from "@/components/ui/label"; // Import Label component
 
 // Define the expected structure of parsed data (adjust based on actual AI output)
 // This should match the structure written by the Cloud Function
-type ParsedResumeData = Omit<Resume, 'createdAt' | 'updatedAt'> & { // Omit Timestamp types for initial data
+// Note: Timestamps are handled by the function/Firestore itself.
+type ParsedResumeData = Omit<Resume, 'createdAt' | 'updatedAt' | 'parsingDone' | 'originalFileName' | 'storagePath'> & {
+    // These optional fields might be added by the function/parsing process
     parsingDone?: boolean;
     originalFileName?: string;
     storagePath?: string;
+     // We still expect the core fields to be potentially populated
+    resumeId?: string;
+    userId?: string;
+    title?: string;
+    personalInfo?: Resume['personalInfo'];
+    summary?: Resume['summary'];
+    education?: Resume['education'];
+    experience?: Resume['experience'];
+    skills?: Resume['skills'];
+    languages?: Resume['languages'];
+    hobbies?: Resume['hobbies'];
+    customSections?: Resume['customSections'];
 };
 
+
 interface PdfUploaderProps {
-  onParsingComplete: (parsedData: ParsedResumeData) => void; // Use the specific type
+  // The callback still expects data that *could* populate the form
+  onParsingComplete: (parsedData: ParsedResumeData) => void;
 }
 
 const MAX_FILE_SIZE_MB = 5;
@@ -37,7 +54,8 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false); // Simulates backend processing
+  // Removed isProcessing state as client no longer simulates this
+  // const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -72,13 +90,20 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
     setIsUploading(true);
     setError(null);
     setUploadProgress(0);
-    setIsProcessing(false); // Reset processing state
+    // setIsProcessing(false); // Removed processing state
 
     const fileName = `${Date.now()}_${selectedFile.name}`;
+    // Ensure metadata includes the UID for the Cloud Function
+    const metadata = {
+      customMetadata: {
+        'uid': currentUser.uid // Set the UID in metadata
+      }
+    };
     const storagePath = `resumes_uploads/${currentUser.uid}/${fileName}`;
     const storageRef = ref(storage, storagePath);
 
-    const uploadTask = uploadBytesResumable(storageRef, selectedFile);
+    // Pass metadata during upload
+    const uploadTask = uploadBytesResumable(storageRef, selectedFile, metadata);
 
     uploadTask.on(
       'state_changed',
@@ -111,97 +136,47 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
         setIsUploading(false);
         setUploadProgress(100);
         toast({
-          title: 'اكتمل الرفع',
-          description: 'جاري معالجة ملف السيرة الذاتية...',
+          title: 'اكتمل الرفع بنجاح',
+          description: 'بدأت معالجة ملف السيرة الذاتية في الخلفية. سيتم تحديث النموذج عند الانتهاء.',
+           variant: 'default', // Use default variant for success info
         });
-        setIsProcessing(true); // Start simulating processing
+        // Removed setIsProcessing(true)
 
         try {
-          // **IMPORTANT SIMULATION:** In a real app, a Cloud Function would trigger on this upload.
-          // The function would perform Document AI/Vertex AI processing and write the results
-          // to Firestore (e.g., users/{uid}/resumes/{newResumeId}).
-          // The frontend would then listen to that Firestore document for the 'parsingDone' flag.
+          // **REAL FLOW:** The Cloud Function `parseResumePdf` is now responsible
+          // for processing the uploaded file via Document AI/Vertex AI and writing
+          // the result to Firestore: `users/{uid}/resumes/{newResumeId}`.
 
-          // **SIMULATION LOGIC START**
-          // 1. Get download URL (optional, function usually works directly with storage object)
+          // The frontend needs to detect this new data. This can be done by:
+          // 1. A Firestore listener (ideal, requires more setup).
+          // 2. The existing logic in page.tsx which loads the *most recent* CV on mount/user change.
+          //    This means the user might need to wait briefly or potentially refresh
+          //    after the "Upload Complete" message for the new data to appear in the form,
+          //    depending on how quickly the function runs and the data is fetched.
+
+          // We *don't* call onParsingComplete here anymore, as that was part of the simulation.
+          // The parent component (page.tsx) will handle data loading/updating.
+
+          // Optional: Get download URL for debugging, but not essential for the flow
           const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          console.log('File available at', downloadURL); // For debugging
+          console.log('File uploaded successfully. Available at (for debug):', downloadURL);
+          console.log(`Cloud Function 'parseResumePdf' should trigger for path: ${storagePath}`);
 
-          // 2. Simulate AI processing delay
-          await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
-
-          // 3. Simulate creating the Firestore document that the function *would* create
-          const resumeId = Date.now().toString(); // Match function's ID generation for simulation consistency
-          const firestorePath = `users/${currentUser.uid}/resumes/${resumeId}`;
-          const newResumeRef = doc(db, firestorePath);
-
-          // Example Parsed Data (Matching Function Output Structure)
-          const simulatedParsedData: ParsedResumeData = {
-            resumeId: resumeId,
-            userId: currentUser.uid,
-            title: `مسودة مستخرجة من ${selectedFile.name}`,
-            personalInfo: {
-              fullName: 'تجربة الاسم الكامل (محاكاة)',
-              jobTitle: 'تجربة المسمى الوظيفي (محاكاة)',
-              email: currentUser.email || 'email-sim@example.com',
-              phone: '055-SIM-ULATE',
-              address: '123 شارع المحاكاة، مدينة البيانات',
-            },
-            summary: 'هذا ملخص تم استخراجه بواسطة المحاكاة. يجب أن يأتي هذا النص من الذكاء الاصطناعي بعد تحليل السيرة الذاتية الفعلية.',
-            experience: [
-              { jobTitle: 'مطور محاكاة أول', company: 'شركة البيانات الوهمية', startDate: 'يناير 2023', endDate: 'الحاضر', description: 'وصف محاكاة للخبرة العملية، تطوير وصيانة أنظمة المحاكاة.' },
-              { jobTitle: 'مطور محاكاة', company: 'شركة وهمية للبرمجة', startDate: 'يونيو 2021', endDate: 'ديسمبر 2022', description: 'بناء نماذج محاكاة أولية.' },
-            ],
-            education: [
-                { degree: 'بكالوريوس محاكاة الحاسب', institution: 'جامعة البيانات الوهمية', graduationYear: '2021', details: 'مشروع تخرج في تحليل بيانات السيرة الذاتية (محاكاة).' }
-            ],
-            skills: [ { name: 'تحليل PDF (محاكاة)' }, { name: 'استخراج بيانات JSON (محاكاة)' }, { name: 'محاكاة السحابة' }, { name: 'الذكاء الاصطناعي (وهمي)' } ],
-            languages: ['العربية (محاكاة)', 'الإنجليزية (محاكاة)'],
-            hobbies: ['قراءة وثائق Firebase (محاكاة)'],
-            customSections: [
-              { title: 'قسم مخصص (محاكاة)', content: 'محتوى تجريبي لقسم مخصص.' }
-            ],
-            // Fields added by the function
-            parsingDone: true, // Set the flag
-            originalFileName: selectedFile.name,
-            storagePath: storagePath,
-          };
-
-          // Write the simulated data to Firestore, including timestamps
-          // Note: In the real scenario, the *function* writes this, not the client.
-          // The client *listens* for this document.
-          await setDoc(newResumeRef, {
-              ...simulatedParsedData,
-              createdAt: serverTimestamp(), // Firestore server timestamp
-              updatedAt: serverTimestamp(),
-          });
-          console.log(`Simulated Firestore write to: ${firestorePath}`);
-
-
-          // **SIMULATION LOGIC END**
-
-          // Notify parent component (this would normally happen via Firestore listener)
-          // Pass the data *without* the Timestamp objects, as the form expects plain data initially.
-          // The parent component will handle adding timestamps when saving *user edits*.
-          onParsingComplete(simulatedParsedData);
-
-          toast({
-            title: 'نجاح',
-            description: '✅ تم استخراج البيانات، يمكنك المراجعة والتعديل.',
-            variant: 'default', // Use default variant for success
-          });
 
         } catch (processError: any) {
-           console.error('Simulated Processing Error:', processError);
-           setError('❌ تعذّر استخراج البيانات، حاول ملفًا أوضح.');
+           // This catch block might now catch errors from getDownloadURL if that fails
+           console.error('Error after upload (e.g., getting download URL):', processError);
+           setError('حدث خطأ بعد اكتمال الرفع.');
            toast({
-             title: 'خطأ في المعالجة',
-             description: '❌ تعذّر استخراج البيانات، حاول ملفًا أوضح.',
+             title: 'خطأ بعد الرفع',
+             description: 'حدث خطأ غير متوقع بعد اكتمال رفع الملف.',
              variant: 'destructive',
            });
         } finally {
-            setIsProcessing(false);
-            setSelectedFile(null); // Clear selection after processing attempt
+            // Removed setIsProcessing(false);
+            // Keep file selected briefly after upload success message? Or clear immediately?
+            // Clearing immediately gives better feedback that the *client* part is done.
+             setSelectedFile(null);
              if (fileInputRef.current) fileInputRef.current.value = '';
         }
       }
@@ -213,16 +188,16 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
     console.log("Cancellation not implemented yet.");
   };
 
-  const isLoading = isUploading || isProcessing;
+  // Updated isLoading logic
+  const isLoading = isUploading; // Only depends on upload state now
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>رفع واستخراج سيرة ذاتية (PDF)</CardTitle>
         <CardDescription>
-            قم برفع ملف سيرتك الذاتية بصيغة PDF (بحد أقصى {MAX_FILE_SIZE_MB} ميجابايت)، وسنقوم بمحاولة استخراج البيانات تلقائيًا لملء النموذج.
-            <br />
-            <strong className='text-destructive'>ملاحظة:</strong> المعالجة بالذكاء الاصطناعي محاكاة حاليًا. سيتم ملء النموذج ببيانات تجريبية مطابقة لمخرجات الوظيفة السحابية.
+            قم برفع ملف سيرتك الذاتية بصيغة PDF (بحد أقصى {MAX_FILE_SIZE_MB} ميجابايت)، وسيقوم النظام بمحاولة استخراج البيانات تلقائيًا لملء النموذج في الخلفية.
+            {/* Removed the explicit mention of mock data */}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -245,8 +220,9 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
               disabled={!selectedFile || isLoading}
               className="w-full sm:w-auto bg-accent hover:bg-accent/90 text-accent-foreground"
             >
-              {isLoading ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}
-              {isUploading ? 'جاري الرفع...' : (isProcessing ? 'جاري المعالجة...' : 'رفع واستخراج')}
+              {/* Update button text based only on upload state */}
+              {isUploading ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}
+              {isUploading ? 'جاري الرفع...' : 'رفع الملف'}
             </Button>
             {/* Optional: Add cancel button
              {isUploading && (
@@ -257,13 +233,16 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
             */}
         </div>
 
-        {selectedFile && !isLoading && ( // Show selected file even during processing
+        {/* Show selected file info */}
+        {selectedFile && (
             <div className="text-sm text-muted-foreground flex items-center gap-2">
                 <FileText className="h-4 w-4" />
                 <span>الملف المختار: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)</span>
-                {uploadProgress === 100 && !isProcessing && <Check className="h-4 w-4 text-green-600" />}
+                {/* Show check only when upload hits 100% */}
+                {uploadProgress === 100 && <Check className="h-4 w-4 text-green-600" />}
             </div>
         )}
+
 
         {isUploading && (
           <div className="space-y-2">
@@ -273,12 +252,15 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
           </div>
         )}
 
+         {/* Removed isProcessing indicator */}
+         {/*
          {isProcessing && (
            <div className="flex items-center justify-center text-muted-foreground space-x-2 space-x-reverse pt-2">
                <Loader2 className="h-5 w-5 animate-spin" />
                <span>جاري معالجة الملف بواسطة الذكاء الاصطناعي (محاكاة)...</span>
            </div>
          )}
+          */}
 
         {error && (
           <div className="text-destructive text-sm flex items-center gap-2 pt-2">
