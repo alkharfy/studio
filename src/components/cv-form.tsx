@@ -39,18 +39,18 @@ const experienceSchema = z.object({
   startDate: z.string().min(1, { message: 'يجب إدخال تاريخ البدء' }).nullable().default(''), // Consider using date type if needed
   endDate: z.string().optional().nullable(), // Allow null
   description: z.string().optional().nullable(), // Allow null
-}).default({ jobTitle: null, company: null, startDate: null, endDate: null, description: null }); // Use null defaults
+}); // Removed object-level default
 
 const educationSchema = z.object({
   degree: z.string().min(1, { message: 'يجب إدخال اسم الشهادة' }).nullable().default(''),
   institution: z.string().min(1, { message: 'يجب إدخال اسم المؤسسة التعليمية' }).nullable().default(''),
   graduationYear: z.string().min(1, { message: 'يجب إدخال سنة التخرج' }).nullable().default(''),
   details: z.string().optional().nullable(), // Allow null
-}).default({ degree: null, institution: null, graduationYear: null, details: null }); // Use null defaults
+}); // Removed object-level default
 
 const skillSchema = z.object({
   name: z.string().min(1, { message: 'يجب إدخال اسم المهارة' }).nullable().default(''),
-}).default({ name: null }); // Use null default
+}); // Removed object-level default
 
 export const cvSchema = z.object({
   resumeId: z.string().optional(), // To store the ID of the loaded/saved resume
@@ -666,7 +666,7 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({})); }} // Stop propagation to prevent disclosure toggle
+                                        onClick={(e) => { e.stopPropagation(); appendExperience({}); }} // Pass empty object
                                         className="z-10" // Ensure button is clickable over header
                                         aria-label="إضافة خبرة"
                                     >
@@ -785,7 +785,7 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendEducation(educationSchema.parse({})); }} // Stop propagation
+                                        onClick={(e) => { e.stopPropagation(); appendEducation({}); }} // Pass empty object
                                         className="z-10"
                                         aria-label="إضافة تعليم"
                                     >
@@ -889,7 +889,7 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendSkill(skillSchema.parse({})); }} // Stop propagation
+                                        onClick={(e) => { e.stopPropagation(); appendSkill({}); }} // Pass empty object
                                         className="z-10"
                                         aria-label="إضافة مهارة"
                                     >
