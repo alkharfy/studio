@@ -1,3 +1,4 @@
+
 'use client';
 
 import * as React from 'react';
@@ -32,9 +33,10 @@ function CvBuilderPageContent() {
 
     // Function to handle data population from PDF Uploader (or Firestore listener)
     // Renamed from handlePdfParsingComplete for clarity
-    const updateFormWithData = useCallback((parsedData: Partial<FirestoreResumeData>, source: 'pdf' | 'firestore') => {
+    const updateFormWithData = useCallback((parsedData: Partial<FirestoreResumeData> | null, source: 'pdf' | 'firestore') => {
         console.log(`Received data from ${source}:`, parsedData);
-        const normalizedData = normalizeResumeData(parsedData as FirestoreResumeData, currentUser);
+        // Pass parsedData (which can be null) to normalizeResumeData
+        const normalizedData = normalizeResumeData(parsedData as FirestoreResumeData | null, currentUser);
 
         // Preserve the current resumeId if the incoming data doesn't have one
         // (e.g., initial load vs. update from PDF parse)
@@ -44,7 +46,8 @@ function CvBuilderPageContent() {
             console.log("Preserved existing resumeId:", currentResumeId);
         }
         // Ensure the incoming resumeId (if exists) is used
-        else if (parsedData.resumeId) {
+        // FIX: Check if parsedData is not null before accessing its properties
+        else if (parsedData && parsedData.resumeId) {
              normalizedData.resumeId = parsedData.resumeId;
         }
 
@@ -60,7 +63,7 @@ function CvBuilderPageContent() {
                     title: "تم ملء النموذج",
                     description: "تم تحديث النموذج بالبيانات المستخرجة. الرجاء المراجعة والحفظ.",
                 });
-            } else if (source === 'firestore' && parsedData.parsingDone) {
+            } else if (source === 'firestore' && parsedData && parsedData.parsingDone) {
                  // Optional: Toast when data loads from Firestore *after* parsing
                  // Avoid toasting on initial load unless specifically desired
                  // toast({
@@ -159,7 +162,8 @@ function CvBuilderPageContent() {
                      updateFormWithData(updatedCvData, 'firestore');
 
                      // Specific toast for PDF parsing completion
-                     if (updatedCvData.parsingDone) {
+                     // Check parsingDone exists and is true
+                     if (updatedCvData.parsingDone === true) {
                          toast({
                              title: "✅ تم استخراج البيانات",
                              description: "تم تحديث النموذج بالبيانات المستخرجة من ملف PDF. يمكنك الآن المراجعة والتعديل.",
@@ -261,3 +265,4 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
+
