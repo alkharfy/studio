@@ -721,3 +721,4 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
          </form>
   );
 }
+
