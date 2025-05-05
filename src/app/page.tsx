@@ -200,7 +200,7 @@ function CvBuilderPageContent() {
    const currentFormData = form.watch();
 
   return (
-     // Main container with responsive grid layout
+     // Main container with flex layout
     <div className="flex flex-col h-screen bg-muted/40">
          {/* Header Section */}
         <header className="flex h-[60px] items-center justify-between border-b bg-background px-6 py-2 shrink-0">
@@ -221,30 +221,32 @@ function CvBuilderPageContent() {
             )}
         </header>
 
-         {/* Main Content Area (Grid for lg screens+, Flex column for smaller) */}
-         {/* Use lg breakpoint for the grid layout */}
-         <main className="flex-1 grid lg:grid-cols-[1fr_1.4fr] xl:grid-cols-[1fr_1.6fr] lg:rtl:grid-cols-[1.4fr_1fr] xl:rtl:grid-cols-[1.6fr_1fr] gap-0 overflow-hidden">
+        {/* Main Content Area (Flex row with RTL reverse) */}
+        <main className="flex-1 flex flex-row rtl:flex-row-reverse gap-4 p-4 overflow-hidden">
 
-              {/* Left Pane (Preview) - Order 2 on mobile (appears below), Left (order 1) on desktop */}
-              {/* Force LTR direction for the preview content itself */}
-             <section
-               className="bg-white shadow-inner lg:shadow-none lg:border-l lg:rtl:border-l-0 lg:rtl:border-r border-border overflow-y-auto hide-scrollbar order-2 lg:order-1 min-h-0" // Added min-h-0 for flex/grid child height
-               dir="ltr" // Force LTR for the preview pane content for consistent rendering
-               >
+            {/* Left Pane (Preview) - Takes remaining space */}
+            {/* Force LTR direction for the preview content itself */}
+            <section
+                className="flex-1 bg-white rounded-lg shadow-md overflow-auto hide-scrollbar"
+                dir="ltr"
+            >
                 {/* Pass form data to the preview component */}
                 <CvPreview data={currentFormData} />
-             </section>
+            </section>
 
-              {/* Right Pane (Form) - Order 1 on mobile (appears on top), Right (order 2) on desktop */}
-              <section className="overflow-y-auto hide-scrollbar order-1 lg:order-2 min-h-0"> {/* Added min-h-0 */}
-                 {/* Pass form instance and handlers to the form component */}
+            {/* Right Pane (Form) - Fixed width */}
+            <section
+                className="w-[35%] min-w-[340px] bg-white rounded-lg shadow-md overflow-y-auto hide-scrollbar"
+                // No specific padding here, handled by CvForm's internal padding
+            >
+                {/* Pass form instance and handlers to the form component */}
                  <CvForm
                      form={form}
                      isLoadingCv={isLoadingCv}
                      // Pass the unified update function, PDF uploader calls it with source 'pdf'
                      handlePdfParsingComplete={(data) => updateFormWithData(data, 'pdf')}
                   />
-             </section>
+            </section>
         </main>
     </div>
   );
