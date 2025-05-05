@@ -153,6 +153,9 @@ export const parseResumePdf = onObjectFinalized(
         // 3. Extract structured JSON via Vertex AI
         let parsed: any = {}; // Use 'any' initially, validation happens later
         try {
+            // Limit OCR text to 15k characters to stay within token budget
+            const textSnippet = text.slice(0, 15000);
+
             const prompt = `
                 Extract the following résumé fields in STRICT JSON format only, without any introductory text, code block markdown (\`\`\`json ... \`\`\`), or explanation. The output MUST be a single valid JSON object.
                 If a field is not found, represent it as 'null' or an empty array [] as appropriate according to the schema.
@@ -170,10 +173,22 @@ export const parseResumePdf = onObjectFinalized(
                   "hobbies": ["string"] | null
                 }
 
+                Example of valid JSON output (adhere to the schema strictly):
+                {
+                  "title": "مهندس برمجيات",
+                  "personalInfo": { "fullName": "أحمد محمد", "email": "ahmad@example.com", "phone": "+966555555555", "address": "الرياض، المملكة العربية السعودية" },
+                  "objective": "باحث عن وظيفة في مجال تطوير البرمجيات...",
+                  "education": [ { "degree": "بكالوريوس", "institute": "جامعة الملك سعود", "year": "2018" } ],
+                  "experience": [ { "title": "مطور برامج", "company": "شركة تقنية", "start": "2018", "end": "2020", "description": "تطوير تطبيقات..." } ],
+                  "skills": ["Java", "C++", "Python"],
+                  "languages": [ { "name": "العربية", "level": "ممتاز" }, { "name": "الإنجليزية", "level": "جيد" } ],
+                  "hobbies": ["القراءة", "السباحة"]
+                }
+
                 Text to analyse:
-                """
-                ${text.slice(0, 30000)}
-                """
+                \"\"\"
+                ${textSnippet}
+                \"\"\"
 
                 JSON Output:
             `; // Keep text slicing for safety
@@ -228,70 +243,90 @@ export const parseResumePdf = onObjectFinalized(
         const firestorePath = `users/${uid}/resumes/${resumeId}`;
         logger.log(`Generated Firestore Document ID: ${resumeId}. Path: ${firestorePath}`);
 
-        // Map the potentially partial 'parsed' data to the canonical Firestore structure
-        // Ensure all expected top-level keys exist, defaulting to null or empty arrays
-        const dataToSave = {
-            resumeId: resumeId,
-            userId: uid,
-            title: parsed.title ?? `مستخرج من ${fileName}`, // Default title if missing
-            personalInfo: { // Ensure sub-object exists
-                fullName: parsed.personalInfo?.fullName ?? null,
-                email: parsed.personalInfo?.email ?? null,
-                phone: parsed.personalInfo?.phone ?? null,
-                address: parsed.personalInfo?.address ?? null,
-                 // Add jobTitle from parsed if available, or default null
-                jobTitle: parsed.personalInfo?.jobTitle ?? null,
-            },
-            objective: parsed.objective ?? null,
-            // Ensure arrays are initialized even if null/undefined in parsed data
-             // Map institute/year from parsed to institution/graduationYear
-            education: (parsed.education ?? []).map((edu: any) => ({
-                 degree: edu.degree ?? null,
-                 institution: edu.institute ?? edu.institution ?? null, // Accept both names
-                 graduationYear: edu.year ?? edu.graduationYear ?? null, // Accept both names
-                 details: edu.details ?? null,
-             })),
-             // Map title/start/end from parsed to jobTitle/startDate/endDate
-            experience: (parsed.experience ?? []).map((exp: any) => ({
-                 jobTitle: exp.title ?? exp.jobTitle ?? null, // Accept both names
-                 company: exp.company ?? null,
-                 startDate: exp.start ?? exp.startDate ?? null, // Accept both names
-                 endDate: exp.end ?? exp.endDate ?? null, // Accept both names
-                 description: exp.description ?? null,
-             })),
-             // Skills are now expected as string[] from the prompt
-             skills: (parsed.skills ?? []).map((skill: any) => ({
-                 name: typeof skill === 'string' ? skill : skill?.name ?? null
-             })).filter((s: any) => s.name), // Convert back to object for consistency? Or keep as string array?
-             // Let's keep skills as array of objects {name: string} for consistency with form
-             // skills: (parsed.skills ?? []).filter((skill: any) => typeof skill === 'string' && skill.trim() !== ''),
+        // Validate at least personalInfo.fullName exists
+        if (!parsed?.personalInfo?.fullName) {
+            logger.warn("Vertex AI extraction failed to extract fullName. Setting parsingError flag.");
+            try {
+                const resumeDocRef = db.doc(firestorePath);
+                await resumeDocRef.set({
+                    resumeId: resumeId,
+                    userId: uid,
+                    parsingError: "empty_ai_output",
+                    storagePath: name, // Store the GCS path
+                    originalFileName: fileName, // Store original name
+                    createdAt: FieldValue.serverTimestamp(), // Use FieldValue
+                    updatedAt: FieldValue.serverTimestamp(), // Use FieldValue
+                });
+                logger.log(`Successfully wrote parsingError to Firestore: ${firestorePath}`);
+            } catch (firestoreError: any) {
+                logger.error(`❌ Failed to write parsingError to Firestore (${firestorePath}):`, firestoreError.message || firestoreError);
+                logger.error("Firestore Write Error Details:", firestoreError);
+            }
+        } else {
+            // Map the potentially partial 'parsed' data to the canonical Firestore structure
+            // Ensure all expected top-level keys exist, defaulting to null or empty arrays
+            const dataToSave = {
+                resumeId: resumeId,
+                userId: uid,
+                title: parsed.title ?? `مستخرج من ${fileName}`, // Default title if missing
+                personalInfo: { // Ensure sub-object exists
+                    fullName: parsed.personalInfo?.fullName ?? null,
+                    email: parsed.personalInfo?.email ?? null,
+                    phone: parsed.personalInfo?.phone ?? null,
+                    address: parsed.personalInfo?.address ?? null,
+                     // Add jobTitle from parsed if available, or default null
+                    jobTitle: parsed.personalInfo?.jobTitle ?? null,
+                },
+                objective: parsed.objective ?? null,
+                // Ensure arrays are initialized even if null/undefined in parsed data
+                 // Map institute/year from parsed to institution/graduationYear
+                education: (parsed.education ?? []).map((edu: any) => ({
+                     degree: edu.degree ?? null,
+                     institution: edu.institute ?? edu.institution ?? null, // Accept both names
+                     graduationYear: edu.year ?? edu.graduationYear ?? null, // Accept both names
+                     details: edu.details ?? null,
+                 })),
+                 // Map title/start/end from parsed to jobTitle/startDate/endDate
+                experience: (parsed.experience ?? []).map((exp: any) => ({
+                     jobTitle: exp.title ?? exp.jobTitle ?? null, // Accept both names
+                     company: exp.company ?? null,
+                     startDate: exp.start ?? exp.startDate ?? null, // Accept both names
+                     endDate: exp.end ?? exp.endDate ?? null, // Accept both names
+                     description: exp.description ?? null,
+                 })),
+                 // Skills are now expected as string[] from the prompt
+                 skills: (parsed.skills ?? []).map((skill: any) => ({
+                     name: typeof skill === 'string' ? skill : skill?.name ?? null
+                 })).filter((s: any) => s.name), // Convert back to object for consistency? Or keep as string array?
+                 // Let's keep skills as array of objects {name: string} for consistency with form
+                 // skills: (parsed.skills ?? []).filter((skill: any) => typeof skill === 'string' && skill.trim() !== ''),
 
-            languages: (parsed.languages ?? []).map((lang: any) => ({ // Ensure structure is object {name, level}
-                 name: lang.name ?? null,
-                 level: lang.level ?? null,
-             })).filter((l: any) => l.name), // Filter out empty language entries
-             hobbies: (parsed.hobbies ?? []).filter((hobby: any) => typeof hobby === 'string' && hobby.trim() !== ''), // Hobbies expected as string[]
-            customSections: parsed.customSections ?? [], // Add custom sections if parsed
-            parsingDone: true, // Set flag to true
-            storagePath: name, // Store the GCS path
-            originalFileName: fileName, // Store original name
-            createdAt: FieldValue.serverTimestamp(), // Use FieldValue
-            updatedAt: FieldValue.serverTimestamp(), // Use FieldValue
-        };
+                languages: (parsed.languages ?? []).map((lang: any) => ({ // Ensure structure is object {name, level}
+                     name: lang.name ?? null,
+                     level: lang.level ?? null,
+                 })).filter((l: any) => l.name), // Filter out empty language entries
+                 hobbies: (parsed.hobbies ?? []).filter((hobby: any) => typeof hobby === 'string' && hobby.trim() !== ''), // Hobbies expected as string[]
+                customSections: parsed.customSections ?? [], // Add custom sections if parsed
+                parsingDone: true, // Set flag to true
+                storagePath: name, // Store the GCS path
+                originalFileName: fileName, // Store original name
+                createdAt: FieldValue.serverTimestamp(), // Use FieldValue
+                updatedAt: FieldValue.serverTimestamp(), // Use FieldValue
+            };
 
 
-        try {
-            const resumeDocRef = db.doc(firestorePath);
-            await resumeDocRef.set(dataToSave);
-            logger.log(`✅ Successfully wrote mapped data to Firestore: ${firestorePath}`);
-        } catch (firestoreError: any) {
-            logger.error(`❌ Failed to write data to Firestore (${firestorePath}):`, firestoreError.message || firestoreError);
-            logger.error("Firestore Write Error Details:", firestoreError);
-            // Consider deleting the uploaded file or adding retry logic if Firestore write fails
+            try {
+                const resumeDocRef = db.doc(firestorePath);
+                await resumeDocRef.set(dataToSave);
+                logger.log(`✅ Successfully wrote mapped data to Firestore: ${firestorePath}`);
+            } catch (firestoreError: any) {
+                logger.error(`❌ Failed to write data to Firestore (${firestorePath}):`, firestoreError.message || firestoreError);
+                logger.error("Firestore Write Error Details:", firestoreError);
+                // Consider deleting the uploaded file or adding retry logic if Firestore write fails
+            }
         }
     }
 );
 
 // Export callable functions if they are still needed
 export { suggestSummary, suggestSkills } from './callableFunctions';
-

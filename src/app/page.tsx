@@ -159,23 +159,33 @@ function CvBuilderPageContent() {
                 const updatedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData;
                  console.log("Firestore listener received update:", updatedCvData);
 
-                // Update the form regardless of whether parsingDone is true/false initially
-                // This ensures the form reflects the latest saved state or the newly parsed state.
-                console.log("Applying update from Firestore listener to form.");
-                updateFormWithData(updatedCvData, 'firestore');
-
-                 // Specific toast for PDF parsing completion, shown only once when parsingDone becomes true
-                 // Check parsingDone exists and is true, and maybe compare with previous state if needed
-                 // to avoid showing the toast on every subsequent update after parsing.
-                 if (updatedCvData.parsingDone === true ) {
-                    // Consider adding a state flag to show this only once per upload if needed
+                // Check for parsingError, if exists, show toast and reset form
+                if (updatedCvData.parsingError) {
                      toast({
-                         title: "✅ تم استخراج البيانات",
-                         description: "تم تحديث النموذج بالبيانات المستخرجة من ملف PDF. يمكنك الآن المراجعة والتعديل.",
-                         variant: "default",
-                         duration: 5000, // Show longer
+                         title: "❌ تعذّر استخراج البيانات تلقائيًا",
+                         description: "لم نتمكن من استخراج البيانات من هذا الملف. الرجاء ملء النموذج يدويًا.",
+                         variant: "destructive",
                      });
-                 }
+                     updateFormWithData(null, 'firestore'); // Clear form
+                } else {
+                   // Update the form regardless of whether parsingDone is true/false initially
+                   // This ensures the form reflects the latest saved state or the newly parsed state.
+                   console.log("Applying update from Firestore listener to form.");
+                   updateFormWithData(updatedCvData, 'firestore');
+
+                     // Specific toast for PDF parsing completion, shown only once when parsingDone becomes true
+                     // Check parsingDone exists and is true, and maybe compare with previous state if needed
+                     // to avoid showing the toast on every subsequent update after parsing.
+                    if (updatedCvData.parsingDone === true ) {
+                         // Consider adding a state flag to show this only once per upload if needed
+                         toast({
+                             title: "✅ تم استخراج البيانات",
+                             description: "تم تحديث النموذج بالبيانات المستخرجة من ملف PDF. يمكنك الآن المراجعة والتعديل.",
+                             variant: "default",
+                             duration: 5000, // Show longer
+                         });
+                     }
+                }
 
             } else {
                 // Handle case where the last resume might have been deleted or no resumes exist yet
@@ -268,3 +278,4 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
+
