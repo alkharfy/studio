@@ -4,7 +4,7 @@
 import * as React from 'react';
 import { useState } from 'react';
 import { ref, uploadBytesResumable, getDownloadURL, type StorageError } from 'firebase/storage';
-import { doc, setDoc, serverTimestamp, collection } from 'firebase/firestore'; // Firestore imports
+import { doc, setDoc, serverTimestamp, collection, Timestamp } from 'firebase/firestore'; // Import Timestamp
 import { useAuth } from '@/context/AuthContext';
 import { storage, db } from '@/lib/firebase/config'; // Import storage and db
 import { Button } from '@/components/ui/button';
@@ -17,11 +17,15 @@ import type { Resume } from '@/lib/dbTypes'; // Import Resume type
 import { Label } from "@/components/ui/label"; // Import Label component
 
 // Define the expected structure of parsed data (adjust based on actual AI output)
-// This is just an example placeholder
-type ParsedResumeData = Partial<Resume>;
+// This should match the structure written by the Cloud Function
+type ParsedResumeData = Omit<Resume, 'createdAt' | 'updatedAt'> & { // Omit Timestamp types for initial data
+    parsingDone?: boolean;
+    originalFileName?: string;
+    storagePath?: string;
+};
 
 interface PdfUploaderProps {
-  onParsingComplete: (parsedData: ParsedResumeData) => void;
+  onParsingComplete: (parsedData: ParsedResumeData) => void; // Use the specific type
 }
 
 const MAX_FILE_SIZE_MB = 5;
@@ -127,49 +131,59 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
           await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
 
           // 3. Simulate creating the Firestore document that the function *would* create
-          const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
-          const newResumeRef = doc(resumesCollectionRef); // Auto-generate ID
-          const newResumeId = newResumeRef.id;
+          const resumeId = Date.now().toString(); // Match function's ID generation for simulation consistency
+          const firestorePath = `users/${currentUser.uid}/resumes/${resumeId}`;
+          const newResumeRef = doc(db, firestorePath);
 
-          // Example Parsed Data (Replace with actual expected structure from AI)
+          // Example Parsed Data (Matching Function Output Structure)
           const simulatedParsedData: ParsedResumeData = {
-            resumeId: newResumeId,
+            resumeId: resumeId,
             userId: currentUser.uid,
             title: `مسودة مستخرجة من ${selectedFile.name}`,
             personalInfo: {
-              fullName: 'تجربة الاسم الكامل',
-              jobTitle: 'تجربة المسمى الوظيفي',
-              email: currentUser.email || 'email@example.com',
-              phone: '123-456-7890',
-              address: 'تجربة العنوان',
+              fullName: 'تجربة الاسم الكامل (محاكاة)',
+              jobTitle: 'تجربة المسمى الوظيفي (محاكاة)',
+              email: currentUser.email || 'email-sim@example.com',
+              phone: '055-SIM-ULATE',
+              address: '123 شارع المحاكاة، مدينة البيانات',
             },
-            summary: 'هذا ملخص تم استخراجه بواسطة المحاكاة. يجب أن يأتي هذا النص من الذكاء الاصطناعي.',
+            summary: 'هذا ملخص تم استخراجه بواسطة المحاكاة. يجب أن يأتي هذا النص من الذكاء الاصطناعي بعد تحليل السيرة الذاتية الفعلية.',
             experience: [
-              { jobTitle: 'مطور محاكاة', company: 'شركة وهمية', startDate: '2022', endDate: 'الحاضر', description: 'وصف محاكاة للخبرة.' }
+              { jobTitle: 'مطور محاكاة أول', company: 'شركة البيانات الوهمية', startDate: 'يناير 2023', endDate: 'الحاضر', description: 'وصف محاكاة للخبرة العملية، تطوير وصيانة أنظمة المحاكاة.' },
+              { jobTitle: 'مطور محاكاة', company: 'شركة وهمية للبرمجة', startDate: 'يونيو 2021', endDate: 'ديسمبر 2022', description: 'بناء نماذج محاكاة أولية.' },
             ],
             education: [
-                { degree: 'شهادة محاكاة', institution: 'جامعة وهمية', graduationYear: '2020', details: 'تفاصيل محاكاة للتعليم.' }
+                { degree: 'بكالوريوس محاكاة الحاسب', institution: 'جامعة البيانات الوهمية', graduationYear: '2021', details: 'مشروع تخرج في تحليل بيانات السيرة الذاتية (محاكاة).' }
             ],
-            skills: [ { name: 'محاكاة' }, { name: 'استخراج بيانات' }, { name: 'ذكاء اصطناعي (وهمي)' } ],
-            // languages: ['العربية (محاكاة)'], // Add other fields as needed
-            // hobbies: [],
-            // customSections: [],
-            createdAt: serverTimestamp() as any, // Use serverTimestamp
-            updatedAt: serverTimestamp() as any,
-            // Add a flag to indicate parsing is done (the listener would look for this)
-            parsingDone: true, // Hypothetical flag set by the Cloud Function
-            originalFileName: selectedFile.name, // Store original file name
-            storagePath: storagePath, // Store the path for reference
+            skills: [ { name: 'تحليل PDF (محاكاة)' }, { name: 'استخراج بيانات JSON (محاكاة)' }, { name: 'محاكاة السحابة' }, { name: 'الذكاء الاصطناعي (وهمي)' } ],
+            languages: ['العربية (محاكاة)', 'الإنجليزية (محاكاة)'],
+            hobbies: ['قراءة وثائق Firebase (محاكاة)'],
+            customSections: [
+              { title: 'قسم مخصص (محاكاة)', content: 'محتوى تجريبي لقسم مخصص.' }
+            ],
+            // Fields added by the function
+            parsingDone: true, // Set the flag
+            originalFileName: selectedFile.name,
+            storagePath: storagePath,
           };
 
-          // Write the simulated data to Firestore
-          await setDoc(newResumeRef, simulatedParsedData);
+          // Write the simulated data to Firestore, including timestamps
+          // Note: In the real scenario, the *function* writes this, not the client.
+          // The client *listens* for this document.
+          await setDoc(newResumeRef, {
+              ...simulatedParsedData,
+              createdAt: serverTimestamp(), // Firestore server timestamp
+              updatedAt: serverTimestamp(),
+          });
+          console.log(`Simulated Firestore write to: ${firestorePath}`);
 
 
           // **SIMULATION LOGIC END**
 
           // Notify parent component (this would normally happen via Firestore listener)
-          onParsingComplete(simulatedParsedData); // Pass the simulated data
+          // Pass the data *without* the Timestamp objects, as the form expects plain data initially.
+          // The parent component will handle adding timestamps when saving *user edits*.
+          onParsingComplete(simulatedParsedData);
 
           toast({
             title: 'نجاح',
@@ -208,7 +222,7 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
         <CardDescription>
             قم برفع ملف سيرتك الذاتية بصيغة PDF (بحد أقصى {MAX_FILE_SIZE_MB} ميجابايت)، وسنقوم بمحاولة استخراج البيانات تلقائيًا لملء النموذج.
             <br />
-            <strong className='text-destructive'>ملاحظة:</strong> المعالجة بالذكاء الاصطناعي محاكاة حاليًا. سيتم ملء النموذج ببيانات تجريبية.
+            <strong className='text-destructive'>ملاحظة:</strong> المعالجة بالذكاء الاصطناعي محاكاة حاليًا. سيتم ملء النموذج ببيانات تجريبية مطابقة لمخرجات الوظيفة السحابية.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -231,7 +245,7 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
               disabled={!selectedFile || isLoading}
               className="w-full sm:w-auto bg-accent hover:bg-accent/90 text-accent-foreground"
             >
-              {isUploading ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}
+              {isLoading ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}
               {isUploading ? 'جاري الرفع...' : (isProcessing ? 'جاري المعالجة...' : 'رفع واستخراج')}
             </Button>
             {/* Optional: Add cancel button
@@ -243,10 +257,11 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
             */}
         </div>
 
-        {selectedFile && !isUploading && !isProcessing && (
+        {selectedFile && !isLoading && ( // Show selected file even during processing
             <div className="text-sm text-muted-foreground flex items-center gap-2">
                 <FileText className="h-4 w-4" />
                 <span>الملف المختار: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)</span>
+                {uploadProgress === 100 && !isProcessing && <Check className="h-4 w-4 text-green-600" />}
             </div>
         )}
 
@@ -259,14 +274,14 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
         )}
 
          {isProcessing && (
-           <div className="flex items-center justify-center text-muted-foreground space-x-2 space-x-reverse">
+           <div className="flex items-center justify-center text-muted-foreground space-x-2 space-x-reverse pt-2">
                <Loader2 className="h-5 w-5 animate-spin" />
                <span>جاري معالجة الملف بواسطة الذكاء الاصطناعي (محاكاة)...</span>
            </div>
          )}
 
         {error && (
-          <div className="text-destructive text-sm flex items-center gap-2">
+          <div className="text-destructive text-sm flex items-center gap-2 pt-2">
             <X className="h-4 w-4" />
             <span>{error}</span>
           </div>
@@ -277,5 +292,3 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
   );
 }
 
-
-    

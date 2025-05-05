@@ -10,41 +10,54 @@ export interface UserProfile {
   // Add other user profile fields as needed
 }
 
+// Structure matching the Cloud Function's JSON output + Firestore metadata
 export interface Resume {
   resumeId: string;
-  title: string;
   userId: string; // Link resume back to the user
-  personalInfo: {
-    fullName?: string | null; // Make fields optional/nullable where appropriate
+  title: string; // Can be set by user or default from function
+
+  personalInfo?: { // Make the whole object optional
+    fullName?: string | null;
     jobTitle?: string | null;
     email?: string | null;
     phone?: string | null;
     address?: string | null;
-  };
-  summary: string;
-  education: {
+  } | null;
+
+  summary?: string | null; // Also called objective or profile
+
+  education?: { // Make the whole array optional
     degree?: string | null;
     institution?: string | null;
-    graduationYear?: string | null;
+    graduationYear?: string | null; // Keep as string if year only
     details?: string | null;
-  }[]; // Array of education objects
-  experience: {
+  }[] | null;
+
+  experience?: { // Make the whole array optional
     jobTitle?: string | null;
     company?: string | null;
-    startDate?: string | null;
-    endDate?: string | null; // Can be null if current job
+    startDate?: string | null; // Keep as string for flexibility (e.g., "Jan 2020")
+    endDate?: string | null; // Can be null or "Present"
     description?: string | null;
-  }[]; // Array of experience objects
-  skills: { name?: string | null }[]; // Array of skill objects
+  }[] | null;
+
+  skills?: { // Make the whole array optional
+      name?: string | null;
+   }[] | null; // Array of skill objects
+
   languages?: string[] | null; // Optional array of strings
+
   hobbies?: string[] | null; // Optional array of strings
-  customSections?: { title: string; content: string }[] | null; // Optional array of custom sections
-  parsingDone?: boolean; // Flag from PDF parsing simulation/function
+
+  customSections?: { // Make the whole array optional
+    title?: string | null; // Title might be missing
+    content?: string | null;
+   }[] | null;
+
+  // --- Metadata added by function/client ---
+  parsingDone?: boolean; // Flag from PDF parsing
   originalFileName?: string | null; // Name of the uploaded PDF
   storagePath?: string | null; // Path to the PDF in Cloud Storage
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
+  createdAt: Timestamp; // Added by Firestore
+  updatedAt: Timestamp; // Added by Firestore
 }
-
-
-    
