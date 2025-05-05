@@ -39,18 +39,18 @@ const experienceSchema = z.object({
   startDate: z.string().nullable().optional().default(''), // Make optional for empty append
   endDate: z.string().optional().nullable(), // Allow null
   description: z.string().optional().nullable(), // Allow null
-}); // Removed object-level default
+}).default({}); // Add default empty object for append
 
 const educationSchema = z.object({
   degree: z.string().nullable().optional().default(''), // Make optional for empty append
   institution: z.string().nullable().optional().default(''), // Make optional for empty append
   graduationYear: z.string().nullable().optional().default(''), // Make optional for empty append
   details: z.string().optional().nullable(), // Allow null
-}); // Removed object-level default
+}).default({}); // Add default empty object for append
 
 const skillSchema = z.object({
   name: z.string().nullable().optional().default(''), // Make optional for empty append
-}); // Removed object-level default
+}).default({}); // Add default empty object for append
 
 export const cvSchema = z.object({
   resumeId: z.string().optional(), // To store the ID of the loaded/saved resume
@@ -73,7 +73,7 @@ export type CvFormData = z.infer<typeof cvSchema>;
 
 interface CvFormProps {
   isLoadingCv: boolean;
-  handlePdfParsingComplete: (parsedData: Partial<FirestoreResumeData>) => void;
+  // Removed handlePdfParsingComplete prop
 }
 
 // --- Normalization Function (Keep this consistent with page.tsx if sharing logic) ---
@@ -103,26 +103,32 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
         resumeId: raw.resumeId,
         title: raw.title ?? defaults.title,
         fullName: raw.personalInfo?.fullName ?? defaults.fullName,
-        jobTitle: raw.personalInfo?.jobTitle ?? defaults.jobTitle,
+        jobTitle: raw.personalInfo?.jobTitle ?? defaults.jobTitle, // Added jobTitle mapping
         email: raw.personalInfo?.email ?? currentUser?.email ?? defaults.email,
         phone: raw.personalInfo?.phone ?? defaults.phone,
         address: raw.personalInfo?.address ?? defaults.address,
-        summary: raw.summary ?? defaults.summary,
+        summary: raw.summary ?? raw.objective ?? defaults.summary, // Map objective as fallback for summary
         education: (raw.education ?? []).map(edu => ({
             degree: edu.degree ?? '',
-            institution: edu.institution ?? '',
-            graduationYear: edu.graduationYear ?? '',
+            // Map 'institute' from Firestore to 'institution' in form
+            institution: edu.institution ?? edu.institute ?? '',
+             // Map 'year' from Firestore to 'graduationYear' in form
+            graduationYear: edu.graduationYear ?? edu.year ?? '',
             details: edu.details ?? null,
         })).filter(edu => edu.degree || edu.institution || edu.graduationYear),
         experience: (raw.experience ?? []).map(exp => ({
-            jobTitle: exp.jobTitle ?? '',
-            company: exp.company ?? '',
-            startDate: exp.startDate ?? '',
-            endDate: exp.endDate ?? null,
-            description: exp.description ?? null,
+            // Map 'title' from Firestore to 'jobTitle' in form
+            jobTitle: exp.jobTitle ?? exp.title ?? '',
+             company: exp.company ?? '',
+             // Map 'start' from Firestore to 'startDate' in form
+             startDate: exp.startDate ?? exp.start ?? '',
+             // Map 'end' from Firestore to 'endDate' in form
+             endDate: exp.endDate ?? exp.end ?? null,
+             description: exp.description ?? null,
         })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description),
         skills: (raw.skills ?? []).map(skill => ({
-            name: typeof skill === 'string' ? skill : (skill.name ?? ''),
+            // Firestore skills might be string[] or {name: string}[] depending on function version
+            name: typeof skill === 'string' ? skill : (skill?.name ?? ''),
         })).filter(skill => skill.name),
         // Handle yearsExperience (could be calculated or stored)
         yearsExperience: defaults.yearsExperience, // Placeholder
@@ -133,7 +139,7 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
 
 
 // Use useFormContext to get the form instance from the parent provider
-export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
+export function CvForm({ isLoadingCv }: CvFormProps) { // Removed handlePdfParsingComplete from props
   const form = useFormContext<CvFormData>(); // Get form instance from context
   const [isGenerating, setIsGenerating] = useState(false); // For AI content enhancement
   const [isSaving, setIsSaving] = useState(false);
@@ -402,16 +408,19 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
                 docRef = doc(resumesCollectionRef);
                 resumeDataToSave.resumeId = docRef.id;
 
-                const fullDataToSave: FirestoreResumeData = {
-                    ...resumeDataToSave,
-                    parsingDone: false,
-                    originalFileName: null,
-                    storagePath: null,
-                    createdAt: serverTimestamp(),
-                    languages: resumeDataToSave.languages ?? [],
-                    hobbies: resumeDataToSave.hobbies ?? [],
-                    customSections: resumeDataToSave.customSections ?? [],
-                };
+                // When creating a new doc, include all fields expected by FirestoreResumeData
+                 const fullDataToSave: Omit<FirestoreResumeData, 'createdAt' | 'updatedAt'> & { createdAt: any, updatedAt: any } = {
+                     ...resumeDataToSave,
+                     parsingDone: false, // Not parsed from PDF
+                     originalFileName: null, // No original file
+                     storagePath: null, // No storage path yet
+                     // Ensure languages, hobbies, customSections are at least empty arrays
+                     languages: resumeDataToSave.languages ?? [],
+                     hobbies: resumeDataToSave.hobbies ?? [],
+                     customSections: resumeDataToSave.customSections ?? [],
+                     createdAt: serverTimestamp(), // Set createdAt on creation
+                     updatedAt: serverTimestamp(),
+                 };
 
                 await setDoc(docRef, fullDataToSave);
                 form.setValue('resumeId', docRef.id);
@@ -446,7 +455,8 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
   return (
       <div className="p-4">
          <div className="mb-8">
-            <PdfUploader onParsingComplete={handlePdfParsingComplete} />
+            {/* Removed onParsingComplete prop */}
+            <PdfUploader />
          </div>
 
          <form

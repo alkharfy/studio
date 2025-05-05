@@ -19,38 +19,51 @@ export interface Resume { // Keep name Resume, but structure matches Firestore o
 
   personalInfo?: { // Keep optional for flexibility
     fullName?: string | null;
-    jobTitle?: string | null; // Function now includes this
+    jobTitle?: string | null; // Added by function
     email?: string | null;
     phone?: string | null;
     address?: string | null;
   } | null;
 
   summary?: string | null; // Changed from 'objective' based on function update
+  objective?: string | null; // Keep objective field if it might still be populated by older versions or direct writes
 
   education?: { // Keep optional
     degree?: string | null;
-    institution?: string | null; // Renamed from institute
-    graduationYear?: string | null; // Renamed from year
+    institution?: string | null; // Mapped from institute
+    institute?: string | null; // Keep institute for backward compatibility?
+    graduationYear?: string | null; // Mapped from year
+    year?: string | null; // Keep year for backward compatibility?
     details?: string | null; // Added details field
   }[] | null;
 
   experience?: { // Keep optional
-    jobTitle?: string | null; // Renamed from title
+    jobTitle?: string | null; // Mapped from title
+    title?: string | null; // Keep title for backward compatibility?
     company?: string | null;
-    startDate?: string | null; // Renamed from start
-    endDate?: string | null; // Renamed from end
+    startDate?: string | null; // Mapped from start
+    start?: string | null; // Keep start for backward compatibility?
+    endDate?: string | null; // Mapped from end
+    end?: string | null; // Keep end for backward compatibility?
     description?: string | null;
   }[] | null;
 
-  skills?: { // Array of objects { name: string | null } based on function
+  // Skills expected as array of objects { name: string | null } based on function output
+  skills?: {
       name?: string | null;
    }[] | null;
 
-  languages?: string[] | null; // Simple string array based on function
+  // Languages expected as array of objects { name: string | null, level: string | null } based on function output
+  languages?: {
+      name?: string | null;
+      level?: string | null;
+  }[] | null;
 
-  hobbies?: string[] | null; // Simple string array based on function
+   // Hobbies expected as string[] based on function output
+  hobbies?: string[] | null;
 
-  customSections?: { // Added based on function
+  // Custom sections added based on function schema (array of objects)
+  customSections?: {
     title?: string | null;
     content?: string | null;
    }[] | null;
@@ -67,4 +80,3 @@ export interface Resume { // Keep name Resume, but structure matches Firestore o
 // having a different structure for UI state vs Firestore storage.
 // For now, Resume directly reflects the Firestore structure.
 // export type FirestoreResumeData = Resume;
-

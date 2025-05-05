@@ -1,3 +1,4 @@
+
 'use client';
 
 import * as React from 'react';
@@ -10,7 +11,7 @@ import { Loader2, LogOut } from 'lucide-react'; // Added LogOut
 import { ProtectedRoute } from '@/components/ProtectedRoute'; // Import ProtectedRoute
 import { useAuth } from '@/context/AuthContext'; // Import useAuth
 import { db } from '@/lib/firebase/config'; // Import db
-import { collection, getDocs, query, where, orderBy, limit, onSnapshot, QuerySnapshot, DocumentData } from 'firebase/firestore'; // Firestore functions, added onSnapshot
+import { collection, getDocs, query, where, orderBy, limit, onSnapshot, QuerySnapshot, DocumentData, doc } from 'firebase/firestore'; // Firestore functions, added onSnapshot, doc
 import type { Resume as FirestoreResumeData } from '@/lib/dbTypes'; // Use Firestore specific type alias
 import { CvForm, normalizeResumeData, cvSchema, type CvFormData } from '@/components/cv-form'; // Import CvForm and related items
 import { CvPreview } from '@/components/cv-preview'; // Import CvPreview
@@ -57,10 +58,11 @@ function CvBuilderPageContent() {
             console.log("Form reset with normalized data:", normalizedData);
 
              if (source === 'pdf') {
-                toast({
-                    title: "تم ملء النموذج",
-                    description: "تم تحديث النموذج بالبيانات المستخرجة. الرجاء المراجعة والحفظ.",
-                });
+                // This path is no longer used, PDF parsing happens via Cloud Function listener
+                // toast({
+                //     title: "تم ملء النموذج",
+                //     description: "تم تحديث النموذج بالبيانات المستخرجة. الرجاء المراجعة والحفظ.",
+                // });
             } else if (source === 'firestore' && parsedData && parsedData.parsingDone) {
                  // Optional: Toast when data loads from Firestore *after* parsing
                  // Avoid toasting on initial load unless specifically desired
@@ -143,7 +145,10 @@ function CvBuilderPageContent() {
         if (!currentUser?.uid) return; // No user, no listener
 
         const resumesRef = collection(db, 'users', currentUser.uid, 'resumes');
+        // Listen to the *most recently updated* document in the resumes subcollection
         const q = query(resumesRef, orderBy('updatedAt', 'desc'), limit(1));
+
+        console.log(`Setting up Firestore listener for user: ${currentUser.uid}`);
 
         // Set up the listener
         const unsubscribe = onSnapshot(q, (querySnapshot: QuerySnapshot<DocumentData>) => {
@@ -154,33 +159,31 @@ function CvBuilderPageContent() {
                 const updatedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData;
                  console.log("Firestore listener received update:", updatedCvData);
 
-                // Only update the form if the received data is different from the current form state's source ID
-                // This prevents unnecessary resets if the update was triggered by the form saving itself
-                 const currentFormResumeId = form.getValues('resumeId');
-                 if (updatedCvData.resumeId !== currentFormResumeId || updatedCvData.parsingDone) {
-                     console.log("Applying update from Firestore listener to form.");
-                     updateFormWithData(updatedCvData, 'firestore');
+                // Update the form regardless of whether parsingDone is true/false initially
+                // This ensures the form reflects the latest saved state or the newly parsed state.
+                console.log("Applying update from Firestore listener to form.");
+                updateFormWithData(updatedCvData, 'firestore');
 
-                     // Specific toast for PDF parsing completion
-                     // Check parsingDone exists and is true
-                     if (updatedCvData.parsingDone === true) {
-                         toast({
-                             title: "✅ تم استخراج البيانات",
-                             description: "تم تحديث النموذج بالبيانات المستخرجة من ملف PDF. يمكنك الآن المراجعة والتعديل.",
-                             variant: "default",
-                             duration: 5000, // Show longer
-                         });
-                     }
-                 } else {
-                    console.log("Firestore update is the same as current form, skipping reset.");
+                 // Specific toast for PDF parsing completion, shown only once when parsingDone becomes true
+                 // Check parsingDone exists and is true, and maybe compare with previous state if needed
+                 // to avoid showing the toast on every subsequent update after parsing.
+                 if (updatedCvData.parsingDone === true ) {
+                    // Consider adding a state flag to show this only once per upload if needed
+                     toast({
+                         title: "✅ تم استخراج البيانات",
+                         description: "تم تحديث النموذج بالبيانات المستخرجة من ملف PDF. يمكنك الآن المراجعة والتعديل.",
+                         variant: "default",
+                         duration: 5000, // Show longer
+                     });
                  }
 
             } else {
-                // Handle case where the last resume might have been deleted
-                console.log("Firestore listener: No resumes found.");
+                // Handle case where the last resume might have been deleted or no resumes exist yet
+                console.log("Firestore listener: No resumes found for user.");
+                // Reset form to defaults if no resumes exist
                 updateFormWithData(null, 'firestore');
             }
-             setIsLoadingCv(false);
+             setIsLoadingCv(false); // Finished processing update
         }, (error) => {
             console.error("Firestore listener error:", error);
             toast({
@@ -197,7 +200,7 @@ function CvBuilderPageContent() {
             unsubscribe();
         };
         // Rerun listener if user changes or the update function ref changes (should be stable)
-    }, [currentUser?.uid, toast, updateFormWithData, form]); // Add form to dependencies
+    }, [currentUser?.uid, toast, updateFormWithData]); // Removed form from dependencies as reset logic is inside updateFormWithData
 
 
    // Get current form data for the preview component
@@ -248,7 +251,7 @@ function CvBuilderPageContent() {
                      <CvForm
                          isLoadingCv={isLoadingCv}
                          // Pass the unified update function, PDF uploader calls it with source 'pdf'
-                         handlePdfParsingComplete={(data) => updateFormWithData(data, 'pdf')}
+                         // handlePdfParsingComplete={(data) => updateFormWithData(data, 'pdf')} // This is no longer needed, handled by listener
                       />
                  </Form>
             </section>
