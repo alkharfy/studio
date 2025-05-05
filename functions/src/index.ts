@@ -2,7 +2,7 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import {DocumentProcessorServiceClient} from "@google-cloud/documentai";
-import {VertexAI} from "@google-cloud/vertexai";
+import {VertexAI, GenerateContentResponse} from "@google-cloud/vertexai";
 import {Storage} from "@google-cloud/storage";
 import type { Timestamp } from 'firebase-admin/firestore'; // Import Timestamp for type definition
 
@@ -17,10 +17,10 @@ const VERTEX_AI_REGION = "us-central1"; // Explicitly define region for Vertex A
 const GCLOUD_PROJECT = process.env.GCLOUD_PROJECT; // Get project ID from environment
 
 // Initialize Clients (outside the function handler for reuse)
-let docAIClient: DocumentProcessorServiceClient;
-let vertexAI: VertexAI;
-let generativeModel: ReturnType<VertexAI['getGenerativeModel']>;
-let vertexModelName: string; // Store model name for reuse
+let docAIClient: DocumentProcessorServiceClient | null = null;
+let vertexAI: VertexAI | null = null;
+let generativeModel: ReturnType<VertexAI['getGenerativeModel']> | null = null;
+let vertexModelName: string | null = null; // Store model name for reuse
 
 try {
     // Validate project ID early
@@ -228,6 +228,7 @@ export const parseResumePdf = functions.runWith({
               "customSections": [{"title": "string|null", "content": "string|null"}]
             }
 
+            Return a valid JSON object exactly matching this TypeScript type definition for the fields above.
             Maintain Arabic labels and values if they are present in the original résumé text.
             If a field or section is not found, represent it as 'null' or an empty array [] as appropriate in the JSON structure.
             Ensure the final output is a single valid JSON object.
@@ -250,7 +251,9 @@ export const parseResumePdf = functions.runWith({
       if (response.candidates && response.candidates.length > 0 && response.candidates[0].content?.parts?.length > 0) {
         let jsonString = response.candidates[0].content.parts[0].text || "";
         functions.logger.log("Vertex AI raw response text received.");
+        functions.logger.debug("Raw Vertex AI Text Response (trimmed):", jsonString.substring(0, 500)); // Log before cleaning
         jsonString = jsonString.replace(/^```json\s*|```$/g, "").trim();
+        functions.logger.debug("Cleaned Vertex AI JSON string (trimmed):", jsonString.substring(0, 500)); // Log after cleaning
 
         try {
           extractedJson = JSON.parse(jsonString);
@@ -258,7 +261,7 @@ export const parseResumePdf = functions.runWith({
           functions.logger.debug("Parsed JSON Keys:", Object.keys(extractedJson));
         } catch (parseError: any) {
           functions.logger.error("Failed to parse JSON from Vertex AI response:", parseError);
-          functions.logger.error("Raw Vertex AI Text Response (trimmed):", jsonString.substring(0, 500));
+          functions.logger.error("Problematic JSON String:", jsonString); // Log the string that failed parsing
         }
       } else {
         functions.logger.warn("Vertex AI response was empty or had no valid content part.");
@@ -288,29 +291,29 @@ export const parseResumePdf = functions.runWith({
             phone: extractedJson.phone ?? null,
             address: extractedJson.address ?? null,
         },
-        summary: extractedJson.summary ?? null,
+        summary: extractedJson.summary ?? null, // Updated field name based on latest schema
         education: Array.isArray(extractedJson.education) ? extractedJson.education.map((edu: any) => ({
             degree: edu.degree ?? null,
-            institution: edu.institution ?? null,
-            graduationYear: edu.graduationYear ?? null,
+            institution: edu.institution ?? edu.institute ?? null, // Handle both 'institution' and 'institute'
+            graduationYear: edu.graduationYear ?? edu.year ?? null, // Handle both 'graduationYear' and 'year'
             details: edu.details ?? null,
         })).filter(edu => edu.degree || edu.institution || edu.graduationYear)
          : [],
         experience: Array.isArray(extractedJson.experience) ? extractedJson.experience.map((exp: any) => ({
-            jobTitle: exp.jobTitle ?? null,
+            jobTitle: exp.jobTitle ?? exp.title ?? null, // Handle both 'jobTitle' and 'title'
             company: exp.company ?? null,
-            startDate: exp.startDate ?? null,
-            endDate: exp.endDate ?? null,
+            startDate: exp.startDate ?? exp.start ?? null, // Handle both 'startDate' and 'start'
+            endDate: exp.endDate ?? exp.end ?? null, // Handle both 'endDate' and 'end'
             description: exp.description ?? null,
         })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description)
          : [],
         skills: Array.isArray(extractedJson.skills) ? extractedJson.skills.map((skill: any) => ({
-             name: skill.name ?? null,
+             name: typeof skill === 'string' ? skill : (skill?.name ?? null), // Handle string[] or {name:string}[]
         })).filter(skill => skill.name)
          : [],
         languages: Array.isArray(extractedJson.languages) ? extractedJson.languages.map((lang: any) => ({
-             name: lang.name ?? null,
-             level: lang.level ?? null,
+             name: typeof lang === 'string' ? lang : (lang?.name ?? null), // Handle string[] or {name:string, level:string}[]
+             level: lang?.level ?? null,
         })).filter(lang => lang.name || lang.level)
          : [],
         hobbies: Array.isArray(extractedJson.hobbies) ? extractedJson.hobbies.filter((hobby: any) => typeof hobby === 'string') : [],
@@ -326,7 +329,8 @@ export const parseResumePdf = functions.runWith({
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
      };
      functions.logger.log("Successfully mapped extracted JSON to Firestore schema.");
-     functions.logger.debug("Mapped Firestore Data Keys:", Object.keys(mappedData));
+     functions.logger.debug("Mapped Firestore Data (keys):", Object.keys(mappedData));
+     functions.logger.debug("Mapped Firestore Data (sample):", JSON.stringify(mappedData, null, 2).substring(0, 1000)); // Log sample of mapped data
      // --- End Mapping ---
 
 
@@ -348,8 +352,11 @@ export const suggestSummary = functions.runWith({
     region: VERTEX_AI_REGION, // Match Vertex AI region
     memory: "512MiB",
 }).https.onCall(async (data, context) => {
+     functions.logger.info("suggestSummary function invoked.", { data, auth: context.auth?.uid });
+
     // --- Authentication Check ---
     // if (!context.auth) {
+    //     functions.logger.warn("suggestSummary called without authentication.");
     //     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
     // }
 
@@ -357,15 +364,19 @@ export const suggestSummary = functions.runWith({
     const { jobTitle, yearsExp = 0, skills = [], lang = "ar" } = data;
 
     if (!jobTitle || typeof jobTitle !== "string") {
+        functions.logger.error("Invalid input: Missing or invalid 'jobTitle'.", { jobTitle });
         throw new functions.https.HttpsError('invalid-argument', 'The function must be called with a valid "jobTitle" argument.');
     }
     if (typeof yearsExp !== 'number' || yearsExp < 0) {
+         functions.logger.error("Invalid input: Invalid 'yearsExp'.", { yearsExp });
         throw new functions.https.HttpsError('invalid-argument', '"yearsExp" must be a non-negative number.');
     }
     if (!Array.isArray(skills) || !skills.every(s => typeof s === 'string')) {
+         functions.logger.error("Invalid input: Invalid 'skills'.", { skills });
         throw new functions.https.HttpsError('invalid-argument', '"skills" must be an array of strings.');
     }
     if (typeof lang !== 'string' || lang.length !== 2) {
+         functions.logger.error("Invalid input: Invalid 'lang'.", { lang });
         throw new functions.https.HttpsError('invalid-argument', '"lang" must be a valid two-letter language code.');
     }
 
@@ -387,20 +398,24 @@ export const suggestSummary = functions.runWith({
         functions.logger.debug(`Summary Prompt: ${prompt}`);
 
         const result = await generativeModel.generateContent(prompt);
-        const response = result.response;
+        const response : GenerateContentResponse = result.response; // Add type annotation
+
+        functions.logger.info("Received response from Vertex AI for summary.", { status: response?.usageMetadata?.totalTokenCount ? 'OK' : 'Empty/Error' });
 
         if (response.candidates && response.candidates.length > 0 && response.candidates[0].content?.parts?.length > 0) {
             const summaryText = response.candidates[0].content.parts[0].text?.trim() ?? "";
             functions.logger.log("Successfully generated summary from Vertex AI.");
-            functions.logger.debug(`Generated Summary: ${summaryText}`);
+            functions.logger.debug(`Generated Summary (trimmed): ${summaryText.substring(0, 100)}...`);
             return { summary: summaryText };
         } else {
-            functions.logger.warn("Vertex AI response for summary generation was empty or invalid.");
-            throw new functions.https.HttpsError('internal', 'Failed to generate summary from AI.');
+            functions.logger.warn("Vertex AI response for summary generation was empty or invalid.", { response });
+            throw new functions.https.HttpsError('internal', 'Failed to generate summary from AI: Empty or invalid response.');
         }
     } catch (error: any) {
         functions.logger.error("Error generating summary with Vertex AI:", error);
-        throw new functions.https.HttpsError('internal', 'Failed to generate summary due to an AI error.');
+         // Log specific details if available
+         if (error.details) functions.logger.error("Vertex AI Error Details:", error.details);
+        throw new functions.https.HttpsError('internal', `Failed to generate summary due to an AI error: ${error.message || 'Unknown error'}`);
     }
 });
 
@@ -410,8 +425,10 @@ export const suggestSkills = functions.runWith({
     region: VERTEX_AI_REGION, // Match Vertex AI region
     memory: "512MiB",
 }).https.onCall(async (data, context) => {
+    functions.logger.info("suggestSkills function invoked.", { data, auth: context.auth?.uid });
     // --- Authentication Check ---
     // if (!context.auth) {
+    //     functions.logger.warn("suggestSkills called without authentication.");
     //     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
     // }
 
@@ -419,12 +436,15 @@ export const suggestSkills = functions.runWith({
     const { jobTitle, max = 8, lang = "ar" } = data;
 
     if (!jobTitle || typeof jobTitle !== "string") {
+        functions.logger.error("Invalid input: Missing or invalid 'jobTitle'.", { jobTitle });
         throw new functions.https.HttpsError('invalid-argument', 'The function must be called with a valid "jobTitle" argument.');
     }
      if (typeof max !== 'number' || max <= 0 || max > 20) { // Added max validation
+         functions.logger.error("Invalid input: Invalid 'max'.", { max });
         throw new functions.https.HttpsError('invalid-argument', '"max" must be a positive number less than or equal to 20.');
     }
      if (typeof lang !== 'string' || lang.length !== 2) {
+         functions.logger.error("Invalid input: Invalid 'lang'.", { lang });
         throw new functions.https.HttpsError('invalid-argument', '"lang" must be a valid two-letter language code.');
     }
 
@@ -448,33 +468,41 @@ export const suggestSkills = functions.runWith({
         functions.logger.debug(`Skill Suggestion Prompt: ${prompt}`);
 
         const result = await generativeModel.generateContent(prompt);
-        const response = result.response;
+        const response : GenerateContentResponse = result.response; // Add type annotation
+        functions.logger.info("Received response from Vertex AI for skills.", { status: response?.usageMetadata?.totalTokenCount ? 'OK' : 'Empty/Error' });
+
 
         if (response.candidates && response.candidates.length > 0 && response.candidates[0].content?.parts?.length > 0) {
             let jsonString = response.candidates[0].content.parts[0].text || "";
             functions.logger.log("Vertex AI raw response text received for skills.");
+            functions.logger.debug("Raw Vertex AI Text Response for skills (trimmed):", jsonString.substring(0, 500)); // Log before cleaning
             jsonString = jsonString.replace(/^```json\s*|```$/g, "").trim();
+            functions.logger.debug("Cleaned Vertex AI JSON string for skills (trimmed):", jsonString.substring(0, 500)); // Log after cleaning
+
 
              try {
                  const suggestedSkills = JSON.parse(jsonString);
                  if (!Array.isArray(suggestedSkills) || !suggestedSkills.every(s => typeof s === 'string')) {
+                     functions.logger.error("AI response is not a valid JSON array of strings.", { jsonString });
                      throw new Error("AI response is not a valid JSON array of strings.");
                  }
                  functions.logger.log("Successfully parsed suggested skills from Vertex AI.");
-                 functions.logger.debug(`Suggested Skills: ${suggestedSkills.join(', ')}`);
+                 functions.logger.debug(`Suggested Skills (${suggestedSkills.length}): ${suggestedSkills.join(', ')}`);
                  return { skills: suggestedSkills }; // Return { skills: [...] }
              } catch (parseError: any) {
                  functions.logger.error("Failed to parse skills JSON from Vertex AI response:", parseError);
-                 functions.logger.error("Raw Vertex AI Text Response for skills (trimmed):", jsonString.substring(0, 500));
+                 functions.logger.error("Problematic JSON String for skills:", jsonString); // Log the string that failed parsing
                  throw new functions.https.HttpsError('internal', 'Failed to parse suggested skills from AI response.');
              }
         } else {
-            functions.logger.warn("Vertex AI response for skill suggestion was empty or invalid.");
-            throw new functions.https.HttpsError('internal', 'Failed to get skill suggestions from AI.');
+            functions.logger.warn("Vertex AI response for skill suggestion was empty or invalid.", { response });
+            throw new functions.https.HttpsError('internal', 'Failed to get skill suggestions from AI: Empty or invalid response.');
         }
     } catch (error: any) {
         functions.logger.error("Error suggesting skills with Vertex AI:", error);
-        throw new functions.https.HttpsError('internal', 'Failed to suggest skills due to an AI error.');
+         // Log specific details if available
+        if (error.details) functions.logger.error("Vertex AI Error Details:", error.details);
+        throw new functions.https.HttpsError('internal', `Failed to suggest skills due to an AI error: ${error.message || 'Unknown error'}`);
     }
 });
 

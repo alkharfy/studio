@@ -30,26 +30,26 @@ import { doc, setDoc, collection, serverTimestamp, updateDoc } from 'firebase/fi
 import type { Resume as FirestoreResumeData } from '@/lib/dbTypes';
 import { PdfUploader } from '@/components/pdf-uploader';
 import type { User } from 'firebase/auth';
-import { getFunctions, httpsCallable, connectFunctionsEmulator, type Functions } from 'firebase/functions'; // Import Firebase Functions SDK types
+import { getFunctions, httpsCallable, connectFunctionsEmulator, type Functions, type HttpsCallableResult } from 'firebase/functions'; // Import Firebase Functions SDK types
 
 // Define Zod schema for the form (Keep this consistent with page.tsx if sharing logic)
 const experienceSchema = z.object({
-  jobTitle: z.string().min(1, { message: 'يجب إدخال المسمى الوظيفي' }).nullable().default(''),
-  company: z.string().min(1, { message: 'يجب إدخال اسم الشركة' }).nullable().default(''),
-  startDate: z.string().min(1, { message: 'يجب إدخال تاريخ البدء' }).nullable().default(''), // Consider using date type if needed
+  jobTitle: z.string().nullable().optional().default(''), // Make optional for empty append
+  company: z.string().nullable().optional().default(''), // Make optional for empty append
+  startDate: z.string().nullable().optional().default(''), // Make optional for empty append
   endDate: z.string().optional().nullable(), // Allow null
   description: z.string().optional().nullable(), // Allow null
 }); // Removed object-level default
 
 const educationSchema = z.object({
-  degree: z.string().min(1, { message: 'يجب إدخال اسم الشهادة' }).nullable().default(''),
-  institution: z.string().min(1, { message: 'يجب إدخال اسم المؤسسة التعليمية' }).nullable().default(''),
-  graduationYear: z.string().min(1, { message: 'يجب إدخال سنة التخرج' }).nullable().default(''),
+  degree: z.string().nullable().optional().default(''), // Make optional for empty append
+  institution: z.string().nullable().optional().default(''), // Make optional for empty append
+  graduationYear: z.string().nullable().optional().default(''), // Make optional for empty append
   details: z.string().optional().nullable(), // Allow null
 }); // Removed object-level default
 
 const skillSchema = z.object({
-  name: z.string().min(1, { message: 'يجب إدخال اسم المهارة' }).nullable().default(''),
+  name: z.string().nullable().optional().default(''), // Make optional for empty append
 }); // Removed object-level default
 
 export const cvSchema = z.object({
@@ -165,8 +165,8 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
   }, []); // Empty dependency array ensures it runs once on mount
 
   // Define HttpsCallable functions using the initialized instance
-  const suggestSummaryFn = useMemo(() => functionsInstance ? httpsCallable(functionsInstance, 'suggestSummary') : null, [functionsInstance]);
-  const suggestSkillsFn = useMemo(() => functionsInstance ? httpsCallable(functionsInstance, 'suggestSkills') : null, [functionsInstance]);
+  const suggestSummaryFn = useMemo(() => functionsInstance ? httpsCallable< { jobTitle: string; yearsExp: number; skills: string[]; lang: string; }, { summary: string } >(functionsInstance, 'suggestSummary') : null, [functionsInstance]);
+  const suggestSkillsFn = useMemo(() => functionsInstance ? httpsCallable< { jobTitle: string; max?: number; lang?: string; }, { skills: string[] } >(functionsInstance, 'suggestSkills') : null, [functionsInstance]);
   // --- End Firebase Functions Initialization ---
 
 
@@ -228,7 +228,7 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
     }
     setIsLoadingAISkills(true);
     try {
-      const result: any = await suggestSkillsFn({ // Use 'any' for result type from callable for now
+      const result: HttpsCallableResult<{ skills: string[] }> = await suggestSkillsFn({
         jobTitle: jobTitle,
         max: 8,
         lang: "ar",
@@ -251,12 +251,15 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
       }
 
     } catch (error: any) {
-      console.error('AI Skills Suggestion Error:', error);
-      toast({
-        title: 'خطأ في اقتراح المهارات',
-        description: error.message || 'حدث خطأ أثناء محاولة اقتراح المهارات. الرجاء المحاولة مرة أخرى.',
-        variant: 'destructive',
-      });
+        console.error('AI Skills Suggestion Error:', error);
+        const message = error.code === 'internal'
+            ? 'حدث خطأ داخلي في الخادم أثناء اقتراح المهارات. الرجاء المحاولة لاحقاً أو مراجعة سجلات الوظيفة السحابية.'
+            : error.message || 'حدث خطأ أثناء محاولة اقتراح المهارات. الرجاء المحاولة مرة أخرى.';
+        toast({
+            title: 'خطأ في اقتراح المهارات',
+            description: message,
+            variant: 'destructive',
+        });
     } finally {
       setIsLoadingAISkills(false);
     }
@@ -278,7 +281,7 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
 
       setIsLoadingAISummary(true);
       try {
-          const result: any = await suggestSummaryFn({
+          const result: HttpsCallableResult<{ summary: string }> = await suggestSummaryFn({
               jobTitle: jobTitle,
               yearsExp: yearsExp ?? 0, // Pass yearsExperience (default to 0 if null/undefined)
               skills: skills,
@@ -293,12 +296,15 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
           }
 
       } catch (error: any) {
-          console.error('AI Summary Generation Error:', error);
-          toast({
-              title: 'خطأ في توليد النبذة',
-              description: error.message || 'حدث خطأ أثناء محاولة توليد النبذة. الرجاء المحاولة مرة أخرى.',
-              variant: 'destructive',
-          });
+        console.error('AI Summary Generation Error:', error);
+        const message = error.code === 'internal'
+            ? 'حدث خطأ داخلي في الخادم أثناء توليد النبذة. الرجاء المحاولة لاحقاً أو مراجعة سجلات الوظيفة السحابية.'
+            : error.message || 'حدث خطأ أثناء محاولة توليد النبذة. الرجاء المحاولة مرة أخرى.';
+        toast({
+            title: 'خطأ في توليد النبذة',
+            description: message,
+            variant: 'destructive',
+        });
       } finally {
           setIsLoadingAISummary(false);
       }
