@@ -1,3 +1,4 @@
+
 "use client"
 
 import * as React from "react"
@@ -44,19 +45,25 @@ const FormField = <
 const useFormField = () => {
   const fieldContext = React.useContext(FormFieldContext)
   const itemContext = React.useContext(FormItemContext)
-  // Ensure RHFContext is not null before destructuring.
-  // useFormContext returns null if used outside of FormProvider.
-  const RHFContext = useFormContext()
+  const RHFContext = useFormContext() // Call it once
 
+  // Crucial check: Ensure all contexts are available
   if (!fieldContext) {
     throw new Error("useFormField should be used within <FormField>")
   }
   if (!itemContext) {
     throw new Error("useFormField should be used within <FormItem>")
   }
-   // If RHFContext is null, this will throw an error, indicating usage outside FormProvider.
-   // This is the intended behavior.
-   const { getFieldState, formState } = RHFContext;
+   // Check if useFormContext returned null *before* destructuring
+  if (!RHFContext) {
+    // This error means useFormField is used outside of the FormProvider (<Form>)
+    // which should not happen if the structure in page.tsx is correct.
+    // Check the component tree where this specific field is rendered.
+    throw new Error("useFormContext returned null. Ensure the component using useFormField (like FormControl, FormLabel) is rendered within a <Form {...form}> provider.");
+  }
+
+  // Now it's safe to destructure
+  const { getFieldState, formState } = RHFContext;
 
 
  const fieldState = getFieldState(fieldContext.name, formState)
@@ -185,3 +192,4 @@ export {
   FormMessage,
   FormField,
 }
+
