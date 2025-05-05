@@ -401,41 +401,43 @@ type CvFormData = z.infer<typeof cvSchema>;
 
   return (
      <div className="container mx-auto p-4 md:p-8">
-      <header className="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4">
-        <div className="text-center sm:text-right flex-grow"> {/* Adjusted alignment */}
-          <h1 className="text-3xl font-bold text-primary mb-2">صانع السيرة الذاتية العربي</h1>
-          <p className="text-muted-foreground">أنشئ سيرتك الذاتية الاحترافية بسهولة مع تحسينات الذكاء الاصطناعي</p>
-        </div>
-         {currentUser && (
-             <div className='flex items-center gap-2'>
-                {/* Display current CV title being edited */}
-                 <FormField
-                    control={form.control}
-                    name="title"
-                    render={({ field }) => (
-                      <FormItem className="w-48"> {/* Limit width */}
-                        {/* <FormLabel className='text-xs text-muted-foreground'>عنوان السيرة</FormLabel> */}
-                        <FormControl>
-                          <Input placeholder="عنوان السيرة الذاتية" {...field} className="h-9 text-sm"/>
-                        </FormControl>
-                        <FormMessage className="text-xs"/>
-                      </FormItem>
-                    )}
-                  />
-                <Button variant="ghost" onClick={signOut} size="sm">
-                    <LogOut className="ml-2 h-4 w-4" />
-                    تسجيل الخروج
-                </Button>
-             </div>
-         )}
-      </header>
+      {/* Moved Form provider to wrap header and the rest of the form */}
+      <Form {...form}>
+        <header className="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4">
+          <div className="text-center sm:text-right flex-grow"> {/* Adjusted alignment */}
+            <h1 className="text-3xl font-bold text-primary mb-2">صانع السيرة الذاتية العربي</h1>
+            <p className="text-muted-foreground">أنشئ سيرتك الذاتية الاحترافية بسهولة مع تحسينات الذكاء الاصطناعي</p>
+          </div>
+          {currentUser && (
+              <div className='flex items-center gap-2'>
+                 {/* Display current CV title being edited - NOW WRAPPED IN FORM */}
+                  <FormField
+                      control={form.control}
+                      name="title"
+                      render={({ field }) => (
+                        <FormItem className="w-48"> {/* Limit width */}
+                          {/* <FormLabel className='text-xs text-muted-foreground'>عنوان السيرة</FormLabel> */}
+                          <FormControl>
+                            <Input placeholder="عنوان السيرة الذاتية" {...field} className="h-9 text-sm"/>
+                          </FormControl>
+                          <FormMessage className="text-xs"/>
+                        </FormItem>
+                      )}
+                    />
+                  <Button variant="ghost" onClick={signOut} size="sm">
+                      <LogOut className="ml-2 h-4 w-4" />
+                      تسجيل الخروج
+                  </Button>
+              </div>
+          )}
+        </header>
 
         {/* PDF Uploader Section */}
         <div className="mb-8">
            <PdfUploader onParsingComplete={handlePdfParsingComplete} />
         </div>
 
-      <Form {...form}>
+        {/* The rest of the form is now inside the Form provider */}
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
           {/* Personal Information Section */}
           <Card>
@@ -845,7 +847,7 @@ type CvFormData = z.infer<typeof cvSchema>;
              {/* Add Preview/Download button later */}
           </div>
         </form>
-      </Form>
+      </Form> {/* Close the Form provider */}
     </div>
   );
 }
