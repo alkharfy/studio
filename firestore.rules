@@ -1,0 +1,31 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users Collection:
+    // - Allow reading own user profile.
+    // - Allow creating own user profile (on signup).
+    // - Allow updating own user profile.
+    // - Disallow deleting user profiles for now.
+    // - Disallow listing all users.
+    match /users/{userId} {
+      allow read, update: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      // deny delete; // Uncomment to explicitly deny deletion
+      // deny list; // Explicitly deny listing if needed, default is deny
+    }
+
+    // Resumes Subcollection:
+    // - Allow reading, writing (create, update, delete) resumes
+    //   ONLY IF the requesting user's UID matches the parent user document's ID.
+    match /users/{userId}/resumes/{resumeId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Default deny all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
