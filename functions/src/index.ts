@@ -11,15 +11,9 @@ admin.initializeApp();
 const db = admin.firestore();
 const storage = new Storage();
 
-// Initialize Document AI Client
-const docAIClient = new DocumentProcessorServiceClient({apiEndpoint: "us-documentai.googleapis.com"});
-
-// Initialize Vertex AI Client
-const vertexAI = new VertexAI({project: process.env.GCLOUD_PROJECT, location: "us-central1"});
-const generativeModel = vertexAI.getGenerativeModel({
-  model: "gemini-1.0-pro", // Using gemini-1.0-pro
-});
-
+// Initialize Clients (will be fully configured inside the function using config)
+const docAIClient = new DocumentProcessorServiceClient({apiEndpoint: "us-documentai.googleapis.com"}); // Keep region hint
+const vertexAI = new VertexAI({project: process.env.GCLOUD_PROJECT, location: "us-central1"}); // Keep region hint
 
 // Define the structure for the data we want to store in Firestore.
 // This should align with src/lib/dbTypes.ts (but uses Firestore Admin types)
@@ -86,51 +80,60 @@ export const parseResumePdf = functions.runWith({
     }
 
     // --- Get User ID ---
-    // Option 1: Extract from path (as before) - less reliable if path structure changes
-    const pathParts = filePath?.split("/");
-    let uidFromPath: string | undefined;
-    if (pathParts && pathParts.length >= 3 && pathParts[0] === "resumes_uploads") {
-      uidFromPath = pathParts[1];
-      functions.logger.log(`Extracted UID from path: ${uidFromPath}`);
-    }
-
-    // Option 2: Try getting from custom metadata (preferred)
     const uidFromMetadata = objectMetadata?.uid; // Assuming 'uid' key is set during upload
     if (uidFromMetadata) {
       functions.logger.log(`Found UID in metadata: ${uidFromMetadata}`);
+    } else {
+         // Fallback - try extracting from path (less reliable)
+        const pathParts = filePath?.split("/");
+        let uidFromPath: string | undefined;
+        if (pathParts && pathParts.length >= 3 && pathParts[0] === "resumes_uploads") {
+          uidFromPath = pathParts[1];
+          functions.logger.log(`Extracted UID from path: ${uidFromPath}`);
+        }
+        if(!uidFromPath) {
+            functions.logger.error(`Could not determine UID for file ${filePath}. Missing 'uid' in custom metadata and failed to extract from path. Exiting.`);
+            return;
+        }
+         uidFromMetadata = uidFromPath; // Use the path UID if metadata is missing
     }
-
-    // Prioritize metadata UID if available, otherwise fallback to path UID
-    const uid = uidFromMetadata || uidFromPath;
-
-    if (!uid) {
-      functions.logger.error(`Could not determine UID for file ${filePath}. Missing from path and metadata. Exiting.`);
-      return;
-    }
+    const uid = uidFromMetadata; // Use the determined UID
     functions.logger.log(`Using UID: ${uid}`);
     // --- End Get User ID ---
 
-
-    const fileName = pathParts ? pathParts[pathParts.length - 1] : "unknown_file.pdf"; // Handle potential path issue
+    // Extract filename
+    const fileName = filePath?.split('/').pop() ?? "unknown_file.pdf";
     functions.logger.log(`Using FileName: ${fileName}`);
 
-    // Use lowercase key for config access
-    const processorId = functions.config().cv?.docprocessorid;
-    if (!processorId) {
-        functions.logger.error("Document AI Processor ID (cv.docprocessorid) is not set in Functions config. Run 'firebase functions:config:set cv.docprocessorid=YOUR_PROCESSOR_ID'.");
+    // --- Get Configuration Values ---
+    const docProcessorPath = functions.config().cv?.doc_processor_path; // Use the new config key
+    const vertexModelName = functions.config().cv?.vertex_model; // Use the new config key
+
+    if (!docProcessorPath) {
+        functions.logger.error("Document AI Processor Path (cv.doc_processor_path) is not set in Functions config. Run 'firebase functions:config:set cv.doc_processor_path=\"YOUR_PROCESSOR_PATH\"'.");
         // Consider updating Firestore with an error state for the user
         return;
     }
+     if (!vertexModelName) {
+        functions.logger.error("Vertex AI Model Name (cv.vertex_model) is not set in Functions config. Run 'firebase functions:config:set cv.vertex_model=\"YOUR_MODEL_PATH\"'.");
+        // Consider updating Firestore with an error state for the user
+        return;
+    }
+
      // Ensure project ID is correctly retrieved from the environment
     const projectId = process.env.GCLOUD_PROJECT;
     if (!projectId) {
         functions.logger.error("Google Cloud Project ID is not available in the environment (GCLOUD_PROJECT).");
         return;
     }
-    const processorName = `projects/${projectId}/locations/us/processors/${processorId}`;
+
+    // Use the configured processor path directly
+    const processorName = docProcessorPath;
     functions.logger.log(`Using Document AI Processor: ${processorName}`);
+     functions.logger.log(`Using Vertex AI Model: ${vertexModelName}`);
 
 
+    // --- Download File ---
     const bucket = storage.bucket(bucketName);
     const remoteFile = bucket.file(filePath);
     let fileBuffer: Buffer;
@@ -143,9 +146,10 @@ export const parseResumePdf = functions.runWith({
         return;
     }
 
+    // --- Process with Document AI ---
     const encodedImage = fileBuffer.toString("base64");
     const request = {
-      name: processorName,
+      name: processorName, // Use the configured processor path
       rawDocument: {
         content: encodedImage,
         mimeType: "application/pdf",
@@ -176,8 +180,12 @@ export const parseResumePdf = functions.runWith({
       return;
     }
 
-    // --- Updated Vertex AI Prompt ---
-    // Explicitly ask for JSON matching the target structure.
+    // --- Process with Vertex AI ---
+    // Initialize the specific model using the configured name
+    const generativeModel = vertexAI.getGenerativeModel({
+        model: vertexModelName, // Use the configured model name
+    });
+
      const prompt = `
         Extract information from the following résumé text. Return a valid JSON object *exactly* matching this TypeScript type structure:
 
@@ -223,7 +231,6 @@ export const parseResumePdf = functions.runWith({
 
         JSON Output:
         `;
-     // --- End Updated Vertex AI Prompt ---
 
     functions.logger.log("Sending request to Vertex AI (Gemini)...");
     let extractedJson: any = {}; // Use 'any' for initial dynamic structure
@@ -324,6 +331,7 @@ export const parseResumePdf = functions.runWith({
      };
      // --- End Mapping ---
 
+    // --- Write to Firestore ---
     try {
       const resumeDocRef = db.doc(firestorePath);
       // Write the *mapped* data, not the raw extractedJson
@@ -336,3 +344,5 @@ export const parseResumePdf = functions.runWith({
       functions.logger.error("Firestore Write Error Details:", err); // Log full error
     }
  });
+
+    

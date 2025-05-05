@@ -54,8 +54,6 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
-  // Removed isProcessing state as client no longer simulates this
-  // const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -90,7 +88,6 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
     setIsUploading(true);
     setError(null);
     setUploadProgress(0);
-    // setIsProcessing(false); // Removed processing state
 
     const fileName = `${Date.now()}_${selectedFile.name}`;
     // Ensure metadata includes the UID for the Cloud Function
@@ -140,7 +137,6 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
           description: 'بدأت معالجة ملف السيرة الذاتية في الخلفية. سيتم تحديث النموذج عند الانتهاء.',
            variant: 'default', // Use default variant for success info
         });
-        // Removed setIsProcessing(true)
 
         try {
           // **REAL FLOW:** The Cloud Function `parseResumePdf` is now responsible
@@ -173,11 +169,11 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
              variant: 'destructive',
            });
         } finally {
-            // Removed setIsProcessing(false);
-            // Keep file selected briefly after upload success message? Or clear immediately?
-            // Clearing immediately gives better feedback that the *client* part is done.
+            // Clear the selected file immediately after the success toast.
              setSelectedFile(null);
              if (fileInputRef.current) fileInputRef.current.value = '';
+             // Reset progress after a short delay to show 100% briefly
+             setTimeout(() => setUploadProgress(0), 1000);
         }
       }
     );
@@ -188,8 +184,8 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
     console.log("Cancellation not implemented yet.");
   };
 
-  // Updated isLoading logic
-  const isLoading = isUploading; // Only depends on upload state now
+  //isLoading only depends on upload state now
+  const isLoading = isUploading;
 
   return (
     <Card>
@@ -197,7 +193,6 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
         <CardTitle>رفع واستخراج سيرة ذاتية (PDF)</CardTitle>
         <CardDescription>
             قم برفع ملف سيرتك الذاتية بصيغة PDF (بحد أقصى {MAX_FILE_SIZE_MB} ميجابايت)، وسيقوم النظام بمحاولة استخراج البيانات تلقائيًا لملء النموذج في الخلفية.
-            {/* Removed the explicit mention of mock data */}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -220,7 +215,6 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
               disabled={!selectedFile || isLoading}
               className="w-full sm:w-auto bg-accent hover:bg-accent/90 text-accent-foreground"
             >
-              {/* Update button text based only on upload state */}
               {isUploading ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}
               {isUploading ? 'جاري الرفع...' : 'رفع الملف'}
             </Button>
@@ -252,15 +246,6 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
           </div>
         )}
 
-         {/* Removed isProcessing indicator */}
-         {/*
-         {isProcessing && (
-           <div className="flex items-center justify-center text-muted-foreground space-x-2 space-x-reverse pt-2">
-               <Loader2 className="h-5 w-5 animate-spin" />
-               <span>جاري معالجة الملف بواسطة الذكاء الاصطناعي (محاكاة)...</span>
-           </div>
-         )}
-          */}
 
         {error && (
           <div className="text-destructive text-sm flex items-center gap-2 pt-2">
@@ -274,3 +259,4 @@ export function PdfUploader({ onParsingComplete }: PdfUploaderProps) {
   );
 }
 
+    
