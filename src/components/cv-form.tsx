@@ -2,7 +2,7 @@
 'use client';
 
 import * as React from 'react';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react'; // Added useMemo
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, useFieldArray, type UseFormReturn, useFormContext } from 'react-hook-form';
 import { z } from 'zod';
@@ -30,26 +30,7 @@ import { doc, setDoc, collection, serverTimestamp, updateDoc } from 'firebase/fi
 import type { Resume as FirestoreResumeData } from '@/lib/dbTypes';
 import { PdfUploader } from '@/components/pdf-uploader';
 import type { User } from 'firebase/auth';
-import { getFunctions, httpsCallable, connectFunctionsEmulator } from 'firebase/functions'; // Import Firebase Functions SDK
-
-// Initialize Firebase Functions (outside component for reuse)
-const functions = getFunctions(auth.app); // Use auth.app to get the FirebaseApp instance
-
-// Connect to Functions emulator if using emulators
-if (process.env.NEXT_PUBLIC_USE_EMULATOR === 'true') {
-    console.log("Connecting to Functions Emulator (port 5001)...");
-    try {
-        connectFunctionsEmulator(functions, "127.0.0.1", 5001);
-         console.log("Connected to Functions Emulator.");
-    } catch (error) {
-        console.error("Error connecting to Functions emulator:", error);
-    }
-}
-
-// Define HttpsCallable functions (memoize if needed, but usually fine here)
-const suggestSummaryFn = httpsCallable(functions, 'suggestSummary');
-const suggestSkillsFn = httpsCallable(functions, 'suggestSkills');
-
+import { getFunctions, httpsCallable, connectFunctionsEmulator, type Functions } from 'firebase/functions'; // Import Firebase Functions SDK types
 
 // Define Zod schema for the form (Keep this consistent with page.tsx if sharing logic)
 const experienceSchema = z.object({
@@ -161,6 +142,33 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
   const { toast } = useToast();
   const { currentUser } = useAuth();
 
+  // --- Firebase Functions Initialization (Client-side only) ---
+  const functionsInstance = useMemo(() => {
+    // Ensure this runs only on the client where `auth.app` is available
+    if (typeof window !== 'undefined' && auth.app) {
+      const functions = getFunctions(auth.app);
+      // Connect to emulator if configured
+      if (process.env.NEXT_PUBLIC_USE_EMULATOR === 'true') {
+        try {
+          connectFunctionsEmulator(functions, "127.0.0.1", 5001);
+          console.log("Connected to Functions Emulator from CvForm.");
+        } catch (error) {
+          // Avoid duplicate connection errors in hot-reload scenarios
+           if (!(error instanceof Error && error.message.includes('already connected'))) {
+             console.error("Error connecting to Functions emulator from CvForm:", error);
+           }
+        }
+      }
+      return functions;
+    }
+    return null; // Return null during SSR or if auth.app is not ready
+  }, []); // Empty dependency array ensures it runs once on mount
+
+  // Define HttpsCallable functions using the initialized instance
+  const suggestSummaryFn = useMemo(() => functionsInstance ? httpsCallable(functionsInstance, 'suggestSummary') : null, [functionsInstance]);
+  const suggestSkillsFn = useMemo(() => functionsInstance ? httpsCallable(functionsInstance, 'suggestSkills') : null, [functionsInstance]);
+  // --- End Firebase Functions Initialization ---
+
 
   const { fields: experienceFields, append: appendExperience, remove: removeExperience } = useFieldArray({
     control: form.control,
@@ -209,6 +217,10 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
    // --- AI Suggestion Handlers ---
 
    const handleAISkills = async () => {
+    if (!suggestSkillsFn) {
+        toast({ title: 'خطأ', description: 'خدمة اقتراح المهارات غير متاحة حالياً.', variant: 'destructive' });
+        return;
+    }
     const jobTitle = form.getValues('jobTitle');
     if (!jobTitle) {
         toast({ title: 'خطأ', description: 'الرجاء إدخال المسمى الوظيفي أولاً لاقتراح المهارات.', variant: 'destructive' });
@@ -251,6 +263,10 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
   };
 
   const handleAISummary = async () => {
+      if (!suggestSummaryFn) {
+        toast({ title: 'خطأ', description: 'خدمة اقتراح النبذة غير متاحة حالياً.', variant: 'destructive' });
+        return;
+      }
       const jobTitle = form.getValues('jobTitle');
       const yearsExp = form.getValues('yearsExperience'); // Ensure this field exists in the form/schema
       const skills = form.getValues('skills').map(s => s.name).filter(Boolean).slice(0, 5) as string[]; // Get top 5 skill names
@@ -569,8 +585,9 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
                                      type="button"
                                      variant="ghost"
                                      onClick={handleAISummary}
-                                     disabled={isLoadingAISummary || !jobTitle}
+                                     disabled={isLoadingAISummary || !jobTitle || !suggestSummaryFn}
                                      className="mt-2 text-accent hover:bg-accent/10"
+                                     aria-label="كتابة نبذة بالذكاء الاصطناعي"
                                  >
                                      {isLoadingAISummary ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Wand2 className="ml-2 h-4 w-4" />}
                                      {isLoadingAISummary ? 'جاري التوليد...' : 'كتابة نبذة بالذكاء الاصطناعي'}
@@ -622,6 +639,7 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
                                      onClick={handleEnhanceContent}
                                      disabled={isGenerating || !form.watch('jobDescriptionForAI')}
                                      className="bg-accent hover:bg-accent/90 text-accent-foreground"
+                                     aria-label="تحسين الملخص"
                                    >
                                      {isGenerating ? (
                                        <Loader2 className="ml-2 h-4 w-4 animate-spin" />
@@ -920,8 +938,9 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
                                      type="button"
                                      variant="ghost"
                                      onClick={handleAISkills}
-                                     disabled={isLoadingAISkills || !jobTitle}
+                                     disabled={isLoadingAISkills || !jobTitle || !suggestSkillsFn}
                                      className="mt-2 text-accent hover:bg-accent/10"
+                                     aria-label="اقتراح مهارات بالذكاء الاصطناعي"
                                  >
                                      {isLoadingAISkills ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Wand2 className="ml-2 h-4 w-4" />}
                                      {isLoadingAISkills ? 'جاري الاقتراح...' : 'اقتراح مهارات بالذكاء الاصطناعي'}
@@ -945,4 +964,3 @@ export function CvForm({ isLoadingCv, handlePdfParsingComplete }: CvFormProps) {
     </div>
   );
 }
-
