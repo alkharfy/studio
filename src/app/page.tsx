@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as React from 'react';
@@ -53,8 +52,7 @@ function CvBuilderPageContent() {
 
 
         try {
-            // Validate the normalized data before resetting the form
-            cvSchema.parse(normalizedData);
+            // REMOVED: cvSchema.parse(normalizedData); - Let react-hook-form handle validation via resolver
             form.reset(normalizedData, { keepDefaultValues: false }); // Update the entire form state
             console.log("Form reset with normalized data:", normalizedData);
 
@@ -73,10 +71,12 @@ function CvBuilderPageContent() {
             }
 
         } catch (error) {
-            console.error("Error validating normalized data:", error);
+            // This catch block might now be less likely to trigger for ZodErrors here,
+            // but could catch other errors during form.reset if they occur.
+            console.error("Error resetting form:", error);
             toast({
-                title: "خطأ في البيانات",
-                description: `حدث خطأ أثناء التحقق من البيانات المستخرجة. ${error instanceof z.ZodError ? error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') : 'قد تحتاج إلى إدخالها يدويًا.'}`,
+                title: "خطأ في تحديث النموذج",
+                description: `حدث خطأ أثناء تحديث بيانات النموذج.`,
                 variant: "destructive",
             });
         }
@@ -265,4 +265,3 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
-
