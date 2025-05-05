@@ -20,6 +20,7 @@ const GCLOUD_PROJECT = process.env.GCLOUD_PROJECT; // Get project ID from enviro
 let docAIClient: DocumentProcessorServiceClient;
 let vertexAI: VertexAI;
 let generativeModel: ReturnType<VertexAI['getGenerativeModel']>;
+let vertexModelName: string; // Store model name for reuse
 
 try {
     // Validate project ID early
@@ -36,7 +37,7 @@ try {
 
     // --- Get Model Name from Config ---
     // This config is expected to be set via `firebase functions:config:set cv.vertex_model="..."`
-    const vertexModelName = functions.config().cv?.vertex_model;
+    vertexModelName = functions.config().cv?.vertex_model; // Assign to outer scope variable
     if (!vertexModelName) {
         // Throw error during initialization if config is missing, prevents function cold starts with bad config
         throw new Error("Vertex AI Model Name (cv.vertex_model) is not set in Functions config.");
@@ -66,40 +67,38 @@ interface ResumeFirestoreData {
   title: string; // Title for the resume (e.g., from filename or extracted)
   personalInfo?: {
     fullName?: string | null;
+    jobTitle?: string | null; // Added based on form
     email?: string | null;
     phone?: string | null;
     address?: string | null;
   } | null;
-  objective?: string | null; // 'objective' field requested in the prompt
+  summary?: string | null; // Changed from objective based on form/function
   education?: {
     degree?: string | null;
-    institute?: string | null; // Changed 'institution' to 'institute' based on prompt request
-    year?: string | null;      // Changed 'graduationYear' to 'year' based on prompt request
+    institution?: string | null; // Renamed from institute
+    graduationYear?: string | null; // Renamed from year
+    details?: string | null; // Added details
   }[] | null;
   experience?: {
-    title?: string | null; // Changed 'jobTitle' to 'title' based on prompt request
+    jobTitle?: string | null; // Renamed from title
     company?: string | null;
-    start?: string | null; // Changed 'startDate' to 'start' based on prompt request
-    end?: string | null;   // Changed 'endDate' to 'end' based on prompt request
+    startDate?: string | null; // Renamed from start
+    endDate?: string | null; // Renamed from end
     description?: string | null;
   }[] | null;
-  skills?: string[] | null; // Simple string array based on prompt request
-  languages?: {
-      name?: string | null; // Changed to object array based on prompt request
-      level?: string | null;
-  }[] | null;
+  skills?: { name?: string | null }[] | null; // Changed to array of objects based on form
+  languages?: { name?: string | null; level?: string | null }[] | null; // Updated based on function prompt
   hobbies?: string[] | null; // Simple string array based on prompt request
-  // Removed 'customSections' as it wasn't in the latest prompt/mapping request
-  // customSections?: {
-  //   title?: string | null;
-  //   content?: string | null;
-  // }[] | null;
+  customSections?: { // Added based on dbTypes
+    title?: string | null;
+    content?: string | null;
+  }[] | null;
+  // --- Metadata ---
   parsingDone: boolean; // Flag for the frontend listener
   storagePath: string | null; // Path to the original file in GCS
+  originalFileName?: string | null; // Keep track of original filename
   createdAt: admin.firestore.FieldValue | Timestamp; // Use FieldValue for server timestamp on create
   updatedAt: admin.firestore.FieldValue | Timestamp; // Use FieldValue for server timestamp on create/update
-  // Add originalFileName if needed, though not in the latest mapping request
-  // originalFileName?: string | null;
 }
 
 
@@ -230,19 +229,22 @@ export const parseResumePdf = functions.runWith({
             {
               "title": "string|null",
               "fullName": "string|null",
+              "jobTitle": "string|null",
               "email": "string|null",
               "phone": "string|null",
               "address": "string|null",
-              "objective": "string|null",
-              "education": [{ "degree": "string|null", "institute": "string|null", "year": "string|null" }],
-              "experience": [{ "title": "string|null", "company": "string|null", "start": "string|null", "end": "string|null", "description": "string|null" }],
-              "skills": ["string"],
+              "summary": "string|null",
+              "education": [{ "degree": "string|null", "institution": "string|null", "graduationYear": "string|null", "details": "string|null" }],
+              "experience": [{ "jobTitle": "string|null", "company": "string|null", "startDate": "string|null", "endDate": "string|null", "description": "string|null" }],
+              "skills": [{ "name": "string|null" }],
               "languages": [{ "name": "string|null", "level": "string|null" }],
-              "hobbies": ["string"]
+              "hobbies": ["string"],
+              "customSections": [{"title": "string|null", "content": "string|null"}]
             }
 
             Maintain Arabic labels and values if they are present in the original résumé text.
             If a field or section is not found, represent it as 'null' or an empty array [] as appropriate in the JSON structure.
+            Ensure the final output is a single valid JSON object.
 
             TEXT:
             """
@@ -305,32 +307,37 @@ export const parseResumePdf = functions.runWith({
         userId: uid,
         title: extractedJson.title ?? `مستخرج من ${fileName}`, // Use extracted title or default
         personalInfo: { // Ensure personalInfo object exists, even if fields are null
-            fullName: extractedJson.fullName ?? null, // Use fullName from extracted
-            email: extractedJson.email ?? null, // Use email from extracted
-            phone: extractedJson.phone ?? null, // Use phone from extracted
-            address: extractedJson.address ?? null, // Use address from extracted
+            fullName: extractedJson.fullName ?? null,
+            jobTitle: extractedJson.jobTitle ?? null, // Map jobTitle
+            email: extractedJson.email ?? null,
+            phone: extractedJson.phone ?? null,
+            address: extractedJson.address ?? null,
         },
-        objective: extractedJson.objective ?? null, // Use objective from extracted
-        // Map education array, ensuring fields match prompt request (institute, year)
+        summary: extractedJson.summary ?? null, // Map summary
+        // Map education array
         education: Array.isArray(extractedJson.education) ? extractedJson.education.map((edu: any) => ({
             degree: edu.degree ?? null,
-            institute: edu.institute ?? null, // Matches prompt request
-            year: edu.year ?? null,          // Matches prompt request
-        })).filter(edu => edu.degree || edu.institute || edu.year) // Filter out completely empty entries
+            institution: edu.institution ?? null, // Map institution
+            graduationYear: edu.graduationYear ?? null, // Map graduationYear
+            details: edu.details ?? null, // Map details
+        })).filter(edu => edu.degree || edu.institution || edu.graduationYear) // Filter out completely empty entries
          : [], // Default to empty array if not present or not an array
 
-        // Map experience array, ensuring fields match prompt request (title, start, end)
+        // Map experience array
         experience: Array.isArray(extractedJson.experience) ? extractedJson.experience.map((exp: any) => ({
-            title: exp.title ?? null,           // Matches prompt request
+            jobTitle: exp.jobTitle ?? null, // Map jobTitle
             company: exp.company ?? null,
-            start: exp.start ?? null,         // Matches prompt request
-            end: exp.end ?? null,           // Matches prompt request
+            startDate: exp.startDate ?? null, // Map startDate
+            endDate: exp.endDate ?? null, // Map endDate
             description: exp.description ?? null,
-        })).filter(exp => exp.title || exp.company || exp.start || exp.end || exp.description) // Filter out completely empty entries
+        })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description) // Filter out completely empty entries
          : [], // Default to empty array
 
-        // Map skills (assuming simple string array from prompt)
-        skills: Array.isArray(extractedJson.skills) ? extractedJson.skills.filter((skill: any) => typeof skill === 'string') : [],
+        // Map skills (assuming array of objects {name})
+        skills: Array.isArray(extractedJson.skills) ? extractedJson.skills.map((skill: any) => ({
+             name: skill.name ?? null,
+        })).filter(skill => skill.name) // Filter out completely empty entries
+         : [], // Default to empty array
 
         // Map languages (assuming object array {name, level} from prompt)
         languages: Array.isArray(extractedJson.languages) ? extractedJson.languages.map((lang: any) => ({
@@ -342,9 +349,17 @@ export const parseResumePdf = functions.runWith({
         // Map hobbies (assuming simple string array from prompt)
         hobbies: Array.isArray(extractedJson.hobbies) ? extractedJson.hobbies.filter((hobby: any) => typeof hobby === 'string') : [],
 
+        // Map custom sections
+        customSections: Array.isArray(extractedJson.customSections) ? extractedJson.customSections.map((section: any) => ({
+             title: section.title ?? null,
+             content: section.content ?? null,
+        })).filter(section => section.title || section.content) // Filter out completely empty entries
+         : [], // Default to empty array
+
         // --- Metadata fields ---
         parsingDone: true, // Crucial flag for the frontend listener
         storagePath: filePath, // Store the GCS path
+        originalFileName: fileName, // Store original filename
         createdAt: admin.firestore.FieldValue.serverTimestamp(), // Use server timestamp
         updatedAt: admin.firestore.FieldValue.serverTimestamp(), // Use server timestamp
      };
@@ -367,6 +382,72 @@ export const parseResumePdf = functions.runWith({
     }
  });
 
+
+// --- suggestSummary Cloud Function ---
+export const suggestSummary = functions.runWith({
+    region: "us-central1",
+    memory: "512MiB",
+}).https.onCall(async (data, context) => {
+    // --- Authentication Check ---
+    // if (!context.auth) {
+    //     // Throwing an HttpsError so that the client gets the error details.
+    //     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
+    // }
+    // functions.logger.log("Authenticated user:", context.auth.uid); // Log authenticated user if needed
+
+    // --- Input Validation ---
+    const { jobTitle, yearsExp = 0, skills = [], lang = "ar" } = data;
+
+    if (!jobTitle || typeof jobTitle !== "string") {
+        throw new functions.https.HttpsError('invalid-argument', 'The function must be called with a valid "jobTitle" argument.');
+    }
+    if (typeof yearsExp !== 'number' || yearsExp < 0) {
+        throw new functions.https.HttpsError('invalid-argument', '"yearsExp" must be a non-negative number.');
+    }
+    if (!Array.isArray(skills) || !skills.every(s => typeof s === 'string')) {
+        throw new functions.https.HttpsError('invalid-argument', '"skills" must be an array of strings.');
+    }
+    if (typeof lang !== 'string' || lang.length !== 2) { // Basic lang code check
+        throw new functions.https.HttpsError('invalid-argument', '"lang" must be a valid two-letter language code.');
+    }
+
+    functions.logger.log(`Generating summary for: Job Title='${jobTitle}', Years Exp=${yearsExp}, Skills='${skills.join(", ")}', Lang='${lang}'`);
+
+    // --- AI Call ---
+    if (!generativeModel) {
+        functions.logger.error("Vertex AI model not initialized. Cannot generate summary.");
+        throw new functions.https.HttpsError('internal', 'AI model is not available.');
+    }
+
+    const prompt = `
+      Write a concise, engaging professional summary (~70–90 words, 2–3 sentences) in ${lang}
+      for someone with the job title "${jobTitle}", ${yearsExp} years experience and skills: ${skills.join(", ")}.
+      Emphasise impact and soft skills. Provide only the summary text as the response.`;
+
+    try {
+        functions.logger.log("Sending summary generation request to Vertex AI...");
+        functions.logger.debug(`Summary Prompt: ${prompt}`);
+
+        const result = await generativeModel.generateContent(prompt);
+        const response = result.response;
+
+        if (response.candidates && response.candidates.length > 0 && response.candidates[0].content?.parts?.length > 0) {
+            const summaryText = response.candidates[0].content.parts[0].text?.trim() ?? "";
+            functions.logger.log("Successfully generated summary from Vertex AI.");
+            functions.logger.debug(`Generated Summary: ${summaryText}`);
+            return { summary: summaryText };
+        } else {
+            functions.logger.warn("Vertex AI response for summary generation was empty or invalid.");
+            throw new functions.https.HttpsError('internal', 'Failed to generate summary from AI.');
+        }
+    } catch (error: any) {
+        functions.logger.error("Error generating summary with Vertex AI:", error);
+        throw new functions.https.HttpsError('internal', 'Failed to generate summary due to an AI error.');
+    }
+});
+
+
 // Note: Removed the previous V2 function definition as the request provided a V1 structure.
 // Ensure your Firebase project deployment targets V1 functions if using this exact code.
 // If V2 is required, the trigger signature needs to be updated (e.g., using onObjectFinalized from 'firebase-functions/v2/storage').
+
