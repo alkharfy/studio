@@ -11,7 +11,7 @@ import { Loader2, LogOut } from 'lucide-react'; // Added LogOut
 import { ProtectedRoute } from '@/components/ProtectedRoute'; // Import ProtectedRoute
 import { useAuth } from '@/context/AuthContext'; // Import useAuth
 import { db } from '@/lib/firebase/config'; // Import db
-import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'; // Firestore functions
+import { collection, getDocs, query, where, orderBy, limit, onSnapshot, QuerySnapshot, DocumentData } from 'firebase/firestore'; // Firestore functions, added onSnapshot
 import type { Resume as FirestoreResumeData } from '@/lib/dbTypes'; // Use Firestore specific type alias
 import { CvForm, normalizeResumeData, cvSchema, type CvFormData } from '@/components/cv-form'; // Import CvForm and related items
 import { CvPreview } from '@/components/cv-preview'; // Import CvPreview
@@ -30,87 +30,170 @@ function CvBuilderPageContent() {
     mode: 'onChange', // Validate on change for live preview updates
   });
 
-  // Function to load the most recent CV for the user
-  const loadMostRecentCv = useCallback(async (userId: string) => {
-    setIsLoadingCv(true);
-    let loadedCvData: FirestoreResumeData | null = null;
-    try {
-        const resumesRef = collection(db, 'users', userId, 'resumes');
-        // Order by updatedAt descending, limit to 1 to get the most recent
-        const q = query(resumesRef, orderBy('updatedAt', 'desc'), limit(1));
-        const querySnapshot = await getDocs(q);
+    // Function to handle data population from PDF Uploader (or Firestore listener)
+    // Renamed from handlePdfParsingComplete for clarity
+    const updateFormWithData = useCallback((parsedData: Partial<FirestoreResumeData>, source: 'pdf' | 'firestore') => {
+        console.log(`Received data from ${source}:`, parsedData);
+        const normalizedData = normalizeResumeData(parsedData as FirestoreResumeData, currentUser);
 
-        if (!querySnapshot.empty) {
-            const cvDoc = querySnapshot.docs[0];
-            // Combine ID with data
-            loadedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData;
-            console.log("Loaded raw CV data:", loadedCvData);
-            toast({
-                title: 'تم تحميل السيرة الذاتية',
-                description: `تم تحميل "${loadedCvData.title || 'السيرة الذاتية المحفوظة'}".`,
-            });
-        } else {
-            console.log("No existing CV found, will use defaults.");
-            // Optionally toast that a new CV is being created
-             toast({
-                 title: 'سيرة ذاتية جديدة',
-                 description: 'ابدأ بملء النموذج أو قم برفع ملف PDF.',
-             });
+        // Preserve the current resumeId if the incoming data doesn't have one
+        // (e.g., initial load vs. update from PDF parse)
+        const currentResumeId = form.getValues('resumeId');
+        if (currentResumeId && !normalizedData.resumeId) {
+            normalizedData.resumeId = currentResumeId;
+            console.log("Preserved existing resumeId:", currentResumeId);
         }
-    } catch (error) {
-        console.error('Error loading CV:', error);
-        toast({
-            title: 'خطأ',
-            description: 'لم نتمكن من تحميل بيانات السيرة الذاتية.',
-            variant: 'destructive',
-        });
-    } finally {
-        // Normalize the loaded data (or null if none loaded) and reset the form
-        const normalizedData = normalizeResumeData(loadedCvData, currentUser);
-        form.reset(normalizedData);
-        console.log("Form reset with normalized data:", normalizedData);
-        setIsLoadingCv(false);
-    }
-   }, [currentUser, form, toast]); // Dependencies
+        // Ensure the incoming resumeId (if exists) is used
+        else if (parsedData.resumeId) {
+             normalizedData.resumeId = parsedData.resumeId;
+        }
 
-   // Effect to load CV when currentUser is available
+
+        try {
+            // Validate the normalized data before resetting the form
+            cvSchema.parse(normalizedData);
+            form.reset(normalizedData, { keepDefaultValues: false }); // Update the entire form state
+            console.log("Form reset with normalized data:", normalizedData);
+
+             if (source === 'pdf') {
+                toast({
+                    title: "تم ملء النموذج",
+                    description: "تم تحديث النموذج بالبيانات المستخرجة. الرجاء المراجعة والحفظ.",
+                });
+            } else if (source === 'firestore' && parsedData.parsingDone) {
+                 // Optional: Toast when data loads from Firestore *after* parsing
+                 // Avoid toasting on initial load unless specifically desired
+                 // toast({
+                 //     title: 'تم تحميل بيانات السيرة الذاتية',
+                 //     description: 'تم تحديث النموذج بأحدث البيانات المحفوظة.',
+                 // });
+            }
+
+        } catch (error) {
+            console.error("Error validating normalized data:", error);
+            toast({
+                title: "خطأ في البيانات",
+                description: `حدث خطأ أثناء التحقق من البيانات المستخرجة. ${error instanceof z.ZodError ? error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') : 'قد تحتاج إلى إدخالها يدويًا.'}`,
+                variant: "destructive",
+            });
+        }
+    }, [form, currentUser, toast]); // Dependencies for the callback
+
+    // Function to load the most recent CV once
+    const loadInitialCv = useCallback(async (userId: string) => {
+        setIsLoadingCv(true);
+        let loadedCvData: FirestoreResumeData | null = null;
+        try {
+            const resumesRef = collection(db, 'users', userId, 'resumes');
+            const q = query(resumesRef, orderBy('updatedAt', 'desc'), limit(1));
+            const querySnapshot = await getDocs(q);
+
+            if (!querySnapshot.empty) {
+                const cvDoc = querySnapshot.docs[0];
+                loadedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData;
+                 console.log("Loaded initial CV data:", loadedCvData);
+                 toast({
+                     title: 'تم تحميل السيرة الذاتية',
+                     description: `تم تحميل "${loadedCvData.title || 'السيرة الذاتية المحفوظة'}".`,
+                 });
+                 updateFormWithData(loadedCvData, 'firestore'); // Update form with initial data
+            } else {
+                console.log("No existing CV found, using defaults.");
+                // Reset form with defaults if no CV exists
+                updateFormWithData(null, 'firestore');
+                toast({
+                    title: 'سيرة ذاتية جديدة',
+                    description: 'ابدأ بملء النموذج أو قم برفع ملف PDF.',
+                });
+            }
+        } catch (error) {
+            console.error('Error loading initial CV:', error);
+            toast({
+                title: 'خطأ',
+                description: 'لم نتمكن من تحميل بيانات السيرة الذاتية الأولية.',
+                variant: 'destructive',
+            });
+             updateFormWithData(null, 'firestore'); // Reset form on error
+        } finally {
+            setIsLoadingCv(false);
+        }
+    }, [updateFormWithData, toast]); // Dependencies for initial load
+
+
+   // Effect to load initial CV data only once when currentUser is available
    useEffect(() => {
-      if (currentUser?.uid) {
-        loadMostRecentCv(currentUser.uid);
-      } else {
-          // Handle case where user is not logged in (should be handled by ProtectedRoute)
-          // Reset form using normalization with null data just in case
-          form.reset(normalizeResumeData(null, null));
-          setIsLoadingCv(false); // Stop loading if no user
-      }
-   }, [currentUser, loadMostRecentCv, form]); // Load when user changes
+        if (currentUser?.uid && form.getValues('resumeId') === undefined) { // Load only if no resumeId is set yet
+            loadInitialCv(currentUser.uid);
+        } else if (!currentUser?.uid) {
+            // If user logs out, reset the form to defaults
+            updateFormWithData(null, 'firestore');
+             setIsLoadingCv(false); // Stop loading if no user
+        }
+       // We only want this effect to run when the user ID becomes available *initially*
+       // or when the user logs out. updateFormWithData is stable.
+       // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentUser?.uid, loadInitialCv]);
 
-   // Function to handle data population from PDF Uploader
-   const handlePdfParsingComplete = (parsedData: Partial<FirestoreResumeData>) => {
-     console.log("Received parsed data:", parsedData);
-     const normalizedData = normalizeResumeData(parsedData as FirestoreResumeData, currentUser);
 
-     const currentResumeId = form.getValues('resumeId');
-     if (currentResumeId && !normalizedData.resumeId) {
-         normalizedData.resumeId = currentResumeId;
-     }
+    // Effect to listen for real-time updates (including PDF parsing completion)
+    useEffect(() => {
+        if (!currentUser?.uid) return; // No user, no listener
 
-     try {
-         cvSchema.parse(normalizedData);
-         form.reset(normalizedData); // Update the entire form state
-         toast({
-             title: "تم ملء النموذج",
-             description: "تم تحديث النموذج بالبيانات المستخرجة. الرجاء المراجعة والحفظ.",
-         });
-     } catch (error) {
-         console.error("Error validating normalized data:", error);
-         toast({
-             title: "خطأ في البيانات",
-             description: `حدث خطأ أثناء التحقق من البيانات المستخرجة. ${error instanceof z.ZodError ? error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') : 'قد تحتاج إلى إدخالها يدويًا.'}`,
-             variant: "destructive",
-         });
-     }
-   };
+        const resumesRef = collection(db, 'users', currentUser.uid, 'resumes');
+        const q = query(resumesRef, orderBy('updatedAt', 'desc'), limit(1));
+
+        // Set up the listener
+        const unsubscribe = onSnapshot(q, (querySnapshot: QuerySnapshot<DocumentData>) => {
+            console.log("Firestore listener triggered.");
+             setIsLoadingCv(true); // Indicate loading during update processing
+            if (!querySnapshot.empty) {
+                const cvDoc = querySnapshot.docs[0];
+                const updatedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData;
+                 console.log("Firestore listener received update:", updatedCvData);
+
+                // Only update the form if the received data is different from the current form state's source ID
+                // This prevents unnecessary resets if the update was triggered by the form saving itself
+                 const currentFormResumeId = form.getValues('resumeId');
+                 if (updatedCvData.resumeId !== currentFormResumeId || updatedCvData.parsingDone) {
+                     console.log("Applying update from Firestore listener to form.");
+                     updateFormWithData(updatedCvData, 'firestore');
+
+                     // Specific toast for PDF parsing completion
+                     if (updatedCvData.parsingDone) {
+                         toast({
+                             title: "✅ تم استخراج البيانات",
+                             description: "تم تحديث النموذج بالبيانات المستخرجة من ملف PDF. يمكنك الآن المراجعة والتعديل.",
+                             variant: "default",
+                             duration: 5000, // Show longer
+                         });
+                     }
+                 } else {
+                    console.log("Firestore update is the same as current form, skipping reset.");
+                 }
+
+            } else {
+                // Handle case where the last resume might have been deleted
+                console.log("Firestore listener: No resumes found.");
+                updateFormWithData(null, 'firestore');
+            }
+             setIsLoadingCv(false);
+        }, (error) => {
+            console.error("Firestore listener error:", error);
+            toast({
+                title: 'خطأ في المزامنة',
+                description: 'حدث خطأ أثناء الاستماع لتحديثات السيرة الذاتية.',
+                variant: 'destructive',
+            });
+             setIsLoadingCv(false);
+        });
+
+        // Cleanup function to unsubscribe the listener when the component unmounts or user changes
+        return () => {
+            console.log("Unsubscribing Firestore listener.");
+            unsubscribe();
+        };
+        // Rerun listener if user changes or the update function ref changes (should be stable)
+    }, [currentUser?.uid, toast, updateFormWithData, form]); // Add form to dependencies
 
 
    // Get current form data for the preview component
@@ -138,24 +221,28 @@ function CvBuilderPageContent() {
             )}
         </header>
 
-        {/* Main Content Area (Grid for large screens, Flex for smaller) */}
-        <main className="flex-1 grid lg:grid-cols-[1fr_1.4fr] xl:grid-cols-[1fr_1.6fr] lg:rtl:grid-cols-[1.4fr_1fr] xl:rtl:grid-cols-[1.6fr_1fr] gap-0 overflow-hidden">
-             {/* Left Pane (Preview) - Order 1 on mobile, Left on desktop */}
+         {/* Main Content Area (Grid for lg screens+, Flex column for smaller) */}
+         {/* Use lg breakpoint for the grid layout */}
+         <main className="flex-1 grid lg:grid-cols-[1fr_1.4fr] xl:grid-cols-[1fr_1.6fr] lg:rtl:grid-cols-[1.4fr_1fr] xl:rtl:grid-cols-[1.6fr_1fr] gap-0 overflow-hidden">
+
+              {/* Left Pane (Preview) - Order 2 on mobile (appears below), Left (order 1) on desktop */}
+              {/* Force LTR direction for the preview content itself */}
              <section
-               className="bg-white shadow-lg lg:shadow-none lg:border-l lg:rtl:border-l-0 lg:rtl:border-r border-border overflow-y-auto hide-scrollbar order-2 lg:order-1"
-               dir="ltr" // Force LTR for the preview pane content
+               className="bg-white shadow-inner lg:shadow-none lg:border-l lg:rtl:border-l-0 lg:rtl:border-r border-border overflow-y-auto hide-scrollbar order-2 lg:order-1 min-h-0" // Added min-h-0 for flex/grid child height
+               dir="ltr" // Force LTR for the preview pane content for consistent rendering
                >
                 {/* Pass form data to the preview component */}
                 <CvPreview data={currentFormData} />
              </section>
 
-             {/* Right Pane (Form) - Order 1 on mobile, Right on desktop */}
-             <section className="overflow-y-auto hide-scrollbar order-1 lg:order-2">
+              {/* Right Pane (Form) - Order 1 on mobile (appears on top), Right (order 2) on desktop */}
+              <section className="overflow-y-auto hide-scrollbar order-1 lg:order-2 min-h-0"> {/* Added min-h-0 */}
                  {/* Pass form instance and handlers to the form component */}
                  <CvForm
                      form={form}
                      isLoadingCv={isLoadingCv}
-                     handlePdfParsingComplete={handlePdfParsingComplete}
+                     // Pass the unified update function, PDF uploader calls it with source 'pdf'
+                     handlePdfParsingComplete={(data) => updateFormWithData(data, 'pdf')}
                   />
              </section>
         </main>

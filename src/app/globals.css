@@ -120,3 +120,11 @@ body {
     display: none; /* Chrome, Safari, and Opera */
   }
 }
+
+/* Add print styles */
+@media print {
+  body {
+    margin: 0;
+  }
+  /* Add any other print-specific styles here if needed */
+}

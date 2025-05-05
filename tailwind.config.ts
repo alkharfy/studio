@@ -8,6 +8,13 @@ export default {
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
+    // Define custom screen breakpoints
+    screens: {
+        sm: '480px',
+        md: '768px',
+        lg: '1024px',
+        xl: '1280px',
+      },
   	extend: {
   		colors: {
   			background: 'hsl(var(--background))',
@@ -95,6 +102,6 @@ export default {
   },
   plugins: [
       require("tailwindcss-animate"),
-      require('tailwindcss-dir')(), // Add tailwindcss-dir plugin
+      require('tailwindcss-dir')(), // Ensure tailwindcss-dir plugin is present
     ],
 } satisfies Config;
