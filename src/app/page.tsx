@@ -27,30 +27,31 @@ import { ProtectedRoute } from '@/components/ProtectedRoute'; // Import Protecte
 import { useAuth } from '@/context/AuthContext'; // Import useAuth
 import { db } from '@/lib/firebase/config'; // Import db
 import { doc, setDoc, collection, serverTimestamp, getDocs, query, where, orderBy, limit, updateDoc } from 'firebase/firestore'; // Firestore functions
-import type { Resume } from '@/lib/dbTypes'; // Resume type
+import type { Resume as FirestoreResumeData } from '@/lib/dbTypes'; // Use Firestore specific type alias
 import { PdfUploader } from '@/components/pdf-uploader'; // Import PdfUploader
+import type { User } from 'firebase/auth'; // Import User type
 
 // Define Zod schema for the form
 const experienceSchema = z.object({
-  jobTitle: z.string().min(1, { message: 'يجب إدخال المسمى الوظيفي' }),
-  company: z.string().min(1, { message: 'يجب إدخال اسم الشركة' }),
-  startDate: z.string().min(1, { message: 'يجب إدخال تاريخ البدء' }), // Consider using date type if needed
+  jobTitle: z.string().min(1, { message: 'يجب إدخال المسمى الوظيفي' }).nullable().default(''),
+  company: z.string().min(1, { message: 'يجب إدخال اسم الشركة' }).nullable().default(''),
+  startDate: z.string().min(1, { message: 'يجب إدخال تاريخ البدء' }).nullable().default(''), // Consider using date type if needed
   endDate: z.string().optional().nullable(), // Allow null
   description: z.string().optional().nullable(), // Allow null
-}).default({ jobTitle: '', company: '', startDate: '', endDate: '', description: '' }); // Add default
+}).default({ jobTitle: null, company: null, startDate: null, endDate: null, description: null }); // Use null defaults
 
 
 const educationSchema = z.object({
-  degree: z.string().min(1, { message: 'يجب إدخال اسم الشهادة' }),
-  institution: z.string().min(1, { message: 'يجب إدخال اسم المؤسسة التعليمية' }),
-  graduationYear: z.string().min(1, { message: 'يجب إدخال سنة التخرج' }),
+  degree: z.string().min(1, { message: 'يجب إدخال اسم الشهادة' }).nullable().default(''),
+  institution: z.string().min(1, { message: 'يجب إدخال اسم المؤسسة التعليمية' }).nullable().default(''),
+  graduationYear: z.string().min(1, { message: 'يجب إدخال سنة التخرج' }).nullable().default(''),
   details: z.string().optional().nullable(), // Allow null
-}).default({ degree: '', institution: '', graduationYear: '', details: '' }); // Add default
+}).default({ degree: null, institution: null, graduationYear: null, details: null }); // Use null defaults
 
 
 const skillSchema = z.object({
-  name: z.string().min(1, { message: 'يجب إدخال اسم المهارة' }),
-}).default({ name: '' }); // Add default
+  name: z.string().min(1, { message: 'يجب إدخال اسم المهارة' }).nullable().default(''),
+}).default({ name: null }); // Use null default
 
 const cvSchema = z.object({
   resumeId: z.string().optional(), // To store the ID of the loaded/saved resume
@@ -70,6 +71,70 @@ const cvSchema = z.object({
 
 type CvFormData = z.infer<typeof cvSchema>;
 
+
+// --- Normalization Function ---
+// Maps raw Firestore data to the CvFormData structure used by the form.
+const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User | null): CvFormData => {
+    // Default values based on schema/user context
+    const defaults: CvFormData = {
+        title: 'مسودة السيرة الذاتية',
+        fullName: currentUser?.displayName || '',
+        jobTitle: '',
+        email: currentUser?.email || '',
+        phone: '',
+        address: null,
+        summary: '',
+        experience: [],
+        education: [],
+        skills: [],
+        jobDescriptionForAI: null,
+        resumeId: undefined,
+    };
+
+    if (!raw) {
+        return defaults;
+    }
+
+    // Map from Firestore structure (FirestoreResumeData) to Form structure (CvFormData)
+    // Handle potential null/undefined values from Firestore gracefully using nullish coalescing (??)
+    return {
+        resumeId: raw.resumeId, // Keep the ID
+        title: raw.title ?? defaults.title,
+        // Personal Info
+        fullName: raw.personalInfo?.fullName ?? defaults.fullName,
+        jobTitle: raw.personalInfo?.jobTitle ?? defaults.jobTitle,
+        // Prefer Firestore email if present, *then* logged-in user email, then default
+        email: raw.personalInfo?.email ?? currentUser?.email ?? defaults.email,
+        phone: raw.personalInfo?.phone ?? defaults.phone,
+        address: raw.personalInfo?.address ?? defaults.address,
+        // Summary (matches 'summary' in Firestore structure based on function)
+        summary: raw.summary ?? defaults.summary,
+        // Education (ensure array format and handle nulls)
+        education: (raw.education ?? []).map(edu => ({
+            degree: edu.degree ?? '', // Zod default takes precedence if value is null/undefined
+            institution: edu.institution ?? '',
+            graduationYear: edu.graduationYear ?? '',
+            details: edu.details ?? null, // Keep details optional
+        })),
+        // Experience (ensure array format and handle nulls)
+        experience: (raw.experience ?? []).map(exp => ({
+            jobTitle: exp.jobTitle ?? '',
+            company: exp.company ?? '',
+            startDate: exp.startDate ?? '',
+            endDate: exp.endDate ?? null, // Keep endDate optional
+            description: exp.description ?? null, // Keep description optional
+        })),
+        // Skills (map from { name: string | null }[] to { name: string | null }[])
+        skills: (raw.skills ?? []).map(skill => ({
+            name: skill.name ?? '',
+        })),
+        // Reset AI job description on load
+        jobDescriptionForAI: defaults.jobDescriptionForAI,
+    };
+};
+// --- End Normalization Function ---
+
+
  function CvBuilderPageContent() { // Renamed original content to a sub-component
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false); // Added saving state
@@ -79,28 +144,15 @@ type CvFormData = z.infer<typeof cvSchema>;
 
   const form = useForm<CvFormData>({
     resolver: zodResolver(cvSchema),
-    // Default values are set by the schema or loaded from Firestore
-    // Provide initial empty strings for required fields to satisfy Zod schema
-    defaultValues: {
-        title: 'مسودة السيرة الذاتية',
-        fullName: '',
-        jobTitle: '',
-        email: '',
-        phone: '',
-        summary: '',
-        address: null,
-        experience: [],
-        education: [],
-        skills: [],
-        jobDescriptionForAI: null,
-        resumeId: undefined,
-    },
+    // Default values will be set by the loadMostRecentCv function using normalizeResumeData
+    defaultValues: normalizeResumeData(null, currentUser), // Start with empty/default normalized data
     mode: 'onChange', // Validate on change
   });
 
    // Function to load the most recent CV for the user
    const loadMostRecentCv = useCallback(async (userId: string) => {
     setIsLoadingCv(true);
+    let loadedCvData: FirestoreResumeData | null = null;
     try {
         const resumesRef = collection(db, 'users', userId, 'resumes');
         const q = query(resumesRef, orderBy('updatedAt', 'desc'), limit(1));
@@ -108,41 +160,10 @@ type CvFormData = z.infer<typeof cvSchema>;
 
         if (!querySnapshot.empty) {
             const cvDoc = querySnapshot.docs[0];
-            const cvData = cvDoc.data() as Resume;
-
-             // Ensure arrays are not undefined before resetting
-             // Use schema parse to ensure data conforms and defaults are applied
-             const formData = cvSchema.parse({
-                ...cvData.personalInfo, // Spread personalInfo
-                title: cvData.title || 'مسودة السيرة الذاتية',
-                summary: cvData.summary || '',
-                experience: cvData.experience || [],
-                education: cvData.education || [],
-                skills: cvData.skills || [],
-                jobDescriptionForAI: null, // Reset AI field on load
-                resumeId: cvDoc.id, // Store the loaded document ID
-             });
-
-            form.reset(formData);
-            console.log("Loaded CV:", cvDoc.id, formData);
+            loadedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData; // Cast to FirestoreResumeData
+            console.log("Loaded raw CV data:", loadedCvData);
         } else {
-            // No existing CV, reset with defaults and user info
-             console.log("No existing CV found, using defaults.");
-             // Reset with schema defaults + user info
-             form.reset({
-                 title: 'مسودة السيرة الذاتية',
-                 fullName: currentUser?.displayName || '',
-                 jobTitle: '', // No default job title
-                 email: currentUser?.email || '',
-                 phone: '', // No default phone
-                 address: null,
-                 summary: '', // No default summary
-                 experience: [],
-                 education: [],
-                 skills: [],
-                 jobDescriptionForAI: null,
-                 resumeId: undefined,
-            });
+            console.log("No existing CV found, will use defaults.");
         }
     } catch (error) {
         console.error('Error loading CV:', error);
@@ -151,22 +172,11 @@ type CvFormData = z.infer<typeof cvSchema>;
             description: 'لم نتمكن من تحميل بيانات السيرة الذاتية.',
             variant: 'destructive',
         });
-        // Reset with defaults on error
-         form.reset({
-            title: 'مسودة السيرة الذاتية',
-            fullName: currentUser?.displayName || '',
-            jobTitle: '',
-            email: currentUser?.email || '',
-            phone: '',
-            address: null,
-            summary: '',
-            experience: [],
-            education: [],
-            skills: [],
-            jobDescriptionForAI: null,
-            resumeId: undefined,
-        });
     } finally {
+         // Normalize the loaded data (or null if none loaded) and reset the form
+        const normalizedData = normalizeResumeData(loadedCvData, currentUser);
+        form.reset(normalizedData);
+        console.log("Form reset with normalized data:", normalizedData);
         setIsLoadingCv(false);
     }
    }, [currentUser, form, toast]); // Dependencies
@@ -178,22 +188,9 @@ type CvFormData = z.infer<typeof cvSchema>;
         loadMostRecentCv(currentUser.uid);
       } else {
           // Handle case where user is not logged in (e.g., clear form or show login prompt)
-          // For now, we just ensure loading is false if there's no user
+          // Reset form using normalization with null data
+          form.reset(normalizeResumeData(null, null));
           setIsLoadingCv(false);
-           form.reset({ // Reset to empty defaults if no user
-                title: 'مسودة السيرة الذاتية',
-                fullName: '',
-                jobTitle: '',
-                email: '',
-                phone: '',
-                summary: '',
-                address: null,
-                experience: [],
-                education: [],
-                skills: [],
-                jobDescriptionForAI: null,
-                resumeId: undefined,
-           });
       }
    }, [currentUser, loadMostRecentCv, form]); // Load when user changes
 
@@ -284,42 +281,37 @@ type CvFormData = z.infer<typeof cvSchema>;
   };
 
    // Function to handle data population from PDF Uploader
-   const handlePdfParsingComplete = (parsedData: Partial<Resume>) => {
+   // Uses the same normalization function
+   const handlePdfParsingComplete = (parsedData: Partial<FirestoreResumeData>) => {
      console.log("Received parsed data:", parsedData);
-     // Merge parsed data with existing form data, prioritizing parsed data
-     // Use schema validation/parsing to ensure data integrity
+     // Normalize the parsed data and merge with current user info
+     // The normalizeResumeData function handles defaults and potential nulls
+     const normalizedData = normalizeResumeData(parsedData as FirestoreResumeData, currentUser);
+
+     // We might want to preserve the existing resumeId if the user uploaded over an existing one
+     const currentResumeId = form.getValues('resumeId');
+     if (currentResumeId && !normalizedData.resumeId) {
+         normalizedData.resumeId = currentResumeId;
+     }
+
      try {
-       const currentValues = form.getValues();
-        // Prepare data for parsing, ensuring required fields from parsedData or currentUser exist
-        const dataToParse = {
-            title: parsedData.title || currentValues.title || 'مسودة مستخرجة', // Provide a default title
-            fullName: parsedData.personalInfo?.fullName ?? currentValues.fullName ?? currentUser?.displayName ?? '',
-            jobTitle: parsedData.personalInfo?.jobTitle ?? currentValues.jobTitle ?? '',
-            email: currentUser?.email || parsedData.personalInfo?.email || currentValues.email || '', // Prioritize logged-in user email
-            phone: parsedData.personalInfo?.phone ?? currentValues.phone ?? '',
-            address: parsedData.personalInfo?.address ?? currentValues.address ?? null,
-            summary: parsedData.summary ?? currentValues.summary ?? '',
-            experience: parsedData.experience || currentValues.experience || [],
-            education: parsedData.education || currentValues.education || [],
-            skills: parsedData.skills || currentValues.skills || [],
-            jobDescriptionForAI: currentValues.jobDescriptionForAI, // Keep existing AI description
-            resumeId: currentValues.resumeId, // Preserve current resume ID if editing
-        };
-
-       const mergedData = cvSchema.parse(dataToParse);
-
-         form.reset(mergedData);
+         // Validate the normalized data against the form schema *before* resetting
+         // This shouldn't be strictly necessary if normalization is correct, but adds safety
+         cvSchema.parse(normalizedData);
+         form.reset(normalizedData);
          toast({
              title: "تم ملء النموذج",
              description: "تم تحديث النموذج بالبيانات المستخرجة. الرجاء المراجعة والحفظ.",
          });
      } catch (error) {
-         console.error("Error merging parsed data:", error);
+         console.error("Error validating normalized data:", error);
          toast({
              title: "خطأ في البيانات",
-             description: `حدث خطأ أثناء دمج البيانات المستخرجة. ${error instanceof z.ZodError ? error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') : 'قد تحتاج إلى إدخالها يدويًا.'}`,
+             description: `حدث خطأ أثناء التحقق من البيانات المستخرجة. ${error instanceof z.ZodError ? error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') : 'قد تحتاج إلى إدخالها يدويًا.'}`,
              variant: "destructive",
          });
+          // Optionally reset to a safe default state if validation fails
+          // form.reset(normalizeResumeData(null, currentUser));
      }
    };
 
@@ -331,46 +323,70 @@ type CvFormData = z.infer<typeof cvSchema>;
       }
       setIsSaving(true);
       try {
-          const resumeData: Omit<Resume, 'createdAt' | 'updatedAt'> & { updatedAt: any, createdAt?: any } = { // Type for Firestore data
+          // Map form data (CvFormData) back to Firestore structure (FirestoreResumeData)
+          // Note: We don't include metadata like parsingDone here, only the editable content.
+          const resumeDataToSave: Omit<FirestoreResumeData, 'createdAt' | 'updatedAt' | 'parsingDone' | 'originalFileName' | 'storagePath'> & { updatedAt: any, createdAt?: any } = {
                 userId: currentUser.uid,
                 resumeId: values.resumeId || '', // Will be set below if new
                 title: values.title,
                 personalInfo: {
                     fullName: values.fullName,
                     jobTitle: values.jobTitle,
-                    email: values.email,
+                    email: values.email, // Form email takes precedence
                     phone: values.phone,
                     address: values.address,
                 },
                 summary: values.summary,
-                 // Ensure arrays are passed correctly, even if empty
-                experience: values.experience || [],
-                education: values.education || [],
-                skills: values.skills || [],
-                 // Add other fields from Resume type if they exist in the form
-                 languages: [], // Example: Add if you have a languages field
-                 hobbies: [],   // Example: Add if you have a hobbies field
-                 customSections: [], // Example: Add if you have custom sections
-                 updatedAt: serverTimestamp(), // Update timestamp
+                experience: values.experience.map(exp => ({ // Clean up potential empty defaults if needed
+                    jobTitle: exp.jobTitle || null,
+                    company: exp.company || null,
+                    startDate: exp.startDate || null,
+                    endDate: exp.endDate || null,
+                    description: exp.description || null,
+                })).filter(exp => exp.jobTitle || exp.company), // Filter empty entries
+                education: values.education.map(edu => ({
+                    degree: edu.degree || null,
+                    institution: edu.institution || null,
+                    graduationYear: edu.graduationYear || null,
+                    details: edu.details || null,
+                })).filter(edu => edu.degree || edu.institution), // Filter empty entries
+                skills: values.skills.map(skill => ({
+                    name: skill.name || null,
+                 })).filter(skill => skill.name), // Filter empty entries
+                 // Add other fields if they are part of FirestoreResumeData and CvFormData
+                 languages: [], // Default empty if not in form
+                 hobbies: [],   // Default empty if not in form
+                 customSections: [], // Default empty if not in form
+                 updatedAt: serverTimestamp(), // Always update timestamp
           };
 
            let docRef;
            if (values.resumeId) {
                // Update existing document
                docRef = doc(db, 'users', currentUser.uid, 'resumes', values.resumeId);
-               await updateDoc(docRef, resumeData);
+               // Merge update to avoid overwriting metadata fields like originalFileName etc.
+               // Note: serverTimestamp cannot be merged, so we use updateDoc directly here.
+               // It's generally safer to fetch the doc, merge in code, then set, but updateDoc works for this structure.
+               await updateDoc(docRef, resumeDataToSave);
                toast({ title: 'تم التحديث', description: 'تم تحديث سيرتك الذاتية بنجاح.' });
                console.log('CV Updated:', values.resumeId);
            } else {
                // Create new document
                const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
                docRef = doc(resumesCollectionRef); // Auto-generate ID
-               resumeData.resumeId = docRef.id; // Store the generated ID
-               resumeData.createdAt = serverTimestamp(); // Add createdAt for new docs
-               await setDoc(docRef, resumeData);
-                form.setValue('resumeId', docRef.id); // Update form state with the new ID
+               resumeDataToSave.resumeId = docRef.id; // Store the generated ID
+               (resumeDataToSave as any).createdAt = serverTimestamp(); // Add createdAt for new docs
+               // Also add default metadata for new docs created via form
+               const fullDataToSave = {
+                   ...resumeDataToSave,
+                   parsingDone: false, // Not parsed via PDF upload
+                   originalFileName: null,
+                   storagePath: null,
+               }
+               await setDoc(docRef, fullDataToSave);
+               form.setValue('resumeId', docRef.id); // Update form state with the new ID
                toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية بنجاح.' });
-                console.log('CV Saved:', docRef.id);
+               console.log('CV Saved:', docRef.id);
            }
 
       } catch (error) {
@@ -612,7 +628,7 @@ type CvFormData = z.infer<typeof cvSchema>;
                         <FormItem>
                           <FormLabel>المسمى الوظيفي</FormLabel>
                           <FormControl>
-                            <Input placeholder="مثال: مطور واجهة أمامية" {...field} />
+                            <Input placeholder="مثال: مطور واجهة أمامية" {...field} value={field.value ?? ''} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -625,7 +641,7 @@ type CvFormData = z.infer<typeof cvSchema>;
                         <FormItem>
                           <FormLabel>الشركة</FormLabel>
                           <FormControl>
-                            <Input placeholder="مثال: شركة تقنية ناشئة" {...field} />
+                            <Input placeholder="مثال: شركة تقنية ناشئة" {...field} value={field.value ?? ''} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -640,7 +656,7 @@ type CvFormData = z.infer<typeof cvSchema>;
                                 <FormLabel>تاريخ البدء</FormLabel>
                                 <FormControl>
                                   {/* Consider using a date picker component */}
-                                  <Input placeholder="مثال: يناير 2020" {...field} />
+                                  <Input placeholder="مثال: يناير 2020" {...field} value={field.value ?? ''} />
                                 </FormControl>
                                 <FormMessage />
                               </FormItem>
@@ -721,7 +737,7 @@ type CvFormData = z.infer<typeof cvSchema>;
                       <FormItem>
                         <FormLabel>الشهادة أو الدرجة العلمية</FormLabel>
                         <FormControl>
-                          <Input placeholder="مثال: بكالوريوس علوم الحاسب" {...field} />
+                          <Input placeholder="مثال: بكالوريوس علوم الحاسب" {...field} value={field.value ?? ''} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -734,7 +750,7 @@ type CvFormData = z.infer<typeof cvSchema>;
                       <FormItem>
                         <FormLabel>المؤسسة التعليمية</FormLabel>
                         <FormControl>
-                          <Input placeholder="مثال: جامعة الملك سعود" {...field} />
+                          <Input placeholder="مثال: جامعة الملك سعود" {...field} value={field.value ?? ''} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -748,7 +764,7 @@ type CvFormData = z.infer<typeof cvSchema>;
                         <FormLabel>سنة التخرج</FormLabel>
                         <FormControl>
                            {/* Consider using a year picker */}
-                          <Input placeholder="مثال: 2019" {...field} />
+                          <Input placeholder="مثال: 2019" {...field} value={field.value ?? ''} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -816,7 +832,7 @@ type CvFormData = z.infer<typeof cvSchema>;
                            {/* Hide label for subsequent items */}
                           <FormLabel className="sr-only">المهارة</FormLabel>
                           <FormControl>
-                            <Input placeholder={index === 0 ? "مثال: JavaScript, القيادة, حل المشكلات" : "مهارة أخرى..."} {...field} />
+                            <Input placeholder={index === 0 ? "مثال: JavaScript, القيادة, حل المشكلات" : "مهارة أخرى..."} {...field} value={field.value ?? ''}/>
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -863,3 +879,4 @@ export default function Home() {
 }
 
     
+
