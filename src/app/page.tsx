@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { useState, useCallback, useEffect } from 'react'; // Added useEffect
-import { useForm } from 'react-hook-form';
+import { useForm, FormProvider } from 'react-hook-form'; // Import FormProvider
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,7 @@ import type { Resume as FirestoreResumeData } from '@/lib/dbTypes'; // Use Fires
 import { CvForm, normalizeResumeData, cvSchema, type CvFormData } from '@/components/cv-form'; // Import CvForm and related items
 import { CvPreview } from '@/components/cv-preview'; // Import CvPreview
 import { useToast } from '@/hooks/use-toast'; // Import useToast
+import { Form } from '@/components/ui/form'; // Import the Form component
 
 // Main page component managing layout and data fetching
 function CvBuilderPageContent() {
@@ -260,5 +261,3 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
-
-    
