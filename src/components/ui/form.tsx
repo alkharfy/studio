@@ -56,7 +56,7 @@ const useFormField = () => {
   // Destructure only if context exists
   const { getFieldState, formState } = RHFContext;
 
-  const fieldState = getFieldState(fieldContext.name, formState)
+
 
   // Ensure other contexts are also available (though less likely to be the issue here)
   if (!fieldContext) {
@@ -66,6 +66,7 @@ const useFormField = () => {
     throw new Error("useFormField should be used within <FormItem>")
   }
 
+ const fieldState = getFieldState(fieldContext.name, formState)
 
   const { id } = itemContext
 
