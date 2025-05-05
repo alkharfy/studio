@@ -109,3 +109,14 @@ body {
     @apply bg-background text-foreground;
   }
 }
+
+/* Add utility to hide scrollbar */
+@layer utilities {
+  .hide-scrollbar {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, and Opera */
+  }
+}

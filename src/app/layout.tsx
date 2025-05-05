@@ -1,3 +1,4 @@
+
 import type { Metadata } from 'next';
 import { Cairo } from 'next/font/google'; // Import Cairo font
 import './globals.css';
@@ -31,6 +32,7 @@ export default function RootLayout({
         )}
       >
          <AuthProvider> {/* Wrap children with AuthProvider */}
+            {/* The main layout structure (grid/flex) is now inside page.tsx */}
             {children}
             <Toaster /> {/* Add Toaster component */}
         </AuthProvider>

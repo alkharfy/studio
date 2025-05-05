@@ -2,168 +2,60 @@
 'use client';
 
 import * as React from 'react';
-import { useState, useCallback } from 'react'; // Added useCallback
+import { useState, useCallback, useEffect } from 'react'; // Added useEffect
+import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, useFieldArray } from 'react-hook-form';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-  FormDescription,
-} from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Separator } from '@/components/ui/separator';
-import { enhanceCvContent, type EnhanceCvContentInput } from '@/ai/flows/cv-content-enhancement';
-import { useToast } from '@/hooks/use-toast';
-import { Loader2, PlusCircle, Trash2, Wand2, LogOut, Save } from 'lucide-react'; // Added Save
+import { Loader2, LogOut } from 'lucide-react'; // Added LogOut
 import { ProtectedRoute } from '@/components/ProtectedRoute'; // Import ProtectedRoute
 import { useAuth } from '@/context/AuthContext'; // Import useAuth
 import { db } from '@/lib/firebase/config'; // Import db
-import { doc, setDoc, collection, serverTimestamp, getDocs, query, where, orderBy, limit, updateDoc } from 'firebase/firestore'; // Firestore functions
+import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'; // Firestore functions
 import type { Resume as FirestoreResumeData } from '@/lib/dbTypes'; // Use Firestore specific type alias
-import { PdfUploader } from '@/components/pdf-uploader'; // Import PdfUploader
-import type { User } from 'firebase/auth'; // Import User type
+import { CvForm, normalizeResumeData, cvSchema, type CvFormData } from '@/components/cv-form'; // Import CvForm and related items
+import { CvPreview } from '@/components/cv-preview'; // Import CvPreview
+import { useToast } from '@/hooks/use-toast'; // Import useToast
 
-// Define Zod schema for the form
-const experienceSchema = z.object({
-  jobTitle: z.string().min(1, { message: 'يجب إدخال المسمى الوظيفي' }).nullable().default(''),
-  company: z.string().min(1, { message: 'يجب إدخال اسم الشركة' }).nullable().default(''),
-  startDate: z.string().min(1, { message: 'يجب إدخال تاريخ البدء' }).nullable().default(''), // Consider using date type if needed
-  endDate: z.string().optional().nullable(), // Allow null
-  description: z.string().optional().nullable(), // Allow null
-}).default({ jobTitle: null, company: null, startDate: null, endDate: null, description: null }); // Use null defaults
-
-
-const educationSchema = z.object({
-  degree: z.string().min(1, { message: 'يجب إدخال اسم الشهادة' }).nullable().default(''),
-  institution: z.string().min(1, { message: 'يجب إدخال اسم المؤسسة التعليمية' }).nullable().default(''),
-  graduationYear: z.string().min(1, { message: 'يجب إدخال سنة التخرج' }).nullable().default(''),
-  details: z.string().optional().nullable(), // Allow null
-}).default({ degree: null, institution: null, graduationYear: null, details: null }); // Use null defaults
-
-
-const skillSchema = z.object({
-  name: z.string().min(1, { message: 'يجب إدخال اسم المهارة' }).nullable().default(''),
-}).default({ name: null }); // Use null default
-
-const cvSchema = z.object({
-  resumeId: z.string().optional(), // To store the ID of the loaded/saved resume
-  title: z.string().min(1, { message: 'يجب إدخال عنوان للسيرة الذاتية' }).default('مسودة السيرة الذاتية'),
-  fullName: z.string().min(1, { message: 'يجب إدخال الاسم الكامل' }),
-  jobTitle: z.string().min(1, { message: 'يجب إدخال المسمى الوظيفي الحالي أو المرغوب' }),
-  email: z.string().email({ message: 'البريد الإلكتروني غير صالح' }),
-  phone: z.string().min(1, { message: 'يجب إدخال رقم الهاتف' }),
-  address: z.string().optional().nullable(), // Allow null
-  summary: z.string().min(10, { message: 'يجب أن يكون الملخص 10 أحرف على الأقل' }),
-  experience: z.array(experienceSchema).default([]),
-  education: z.array(educationSchema).default([]),
-  skills: z.array(skillSchema).default([]),
-  jobDescriptionForAI: z.string().optional().nullable(), // For AI enhancement
-});
-
-
-type CvFormData = z.infer<typeof cvSchema>;
-
-
-// --- Normalization Function ---
-// Maps raw Firestore data to the CvFormData structure used by the form.
-const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User | null): CvFormData => {
-    // Default values based on schema/user context
-    const defaults: CvFormData = {
-        title: 'مسودة السيرة الذاتية',
-        fullName: currentUser?.displayName || '',
-        jobTitle: '',
-        email: currentUser?.email || '',
-        phone: '',
-        address: null,
-        summary: '',
-        experience: [],
-        education: [],
-        skills: [],
-        jobDescriptionForAI: null,
-        resumeId: undefined,
-    };
-
-    if (!raw) {
-        return defaults;
-    }
-
-    // Map from Firestore structure (FirestoreResumeData) to Form structure (CvFormData)
-    // Handle potential null/undefined values from Firestore gracefully using nullish coalescing (??)
-    return {
-        resumeId: raw.resumeId, // Keep the ID
-        title: raw.title ?? defaults.title,
-        // Personal Info
-        fullName: raw.personalInfo?.fullName ?? defaults.fullName,
-        jobTitle: raw.personalInfo?.jobTitle ?? defaults.jobTitle,
-        // Prefer Firestore email if present, *then* logged-in user email, then default
-        email: raw.personalInfo?.email ?? currentUser?.email ?? defaults.email,
-        phone: raw.personalInfo?.phone ?? defaults.phone,
-        address: raw.personalInfo?.address ?? defaults.address,
-        // Summary (matches 'summary' in Firestore structure based on function)
-        summary: raw.summary ?? defaults.summary,
-        // Education (ensure array format and handle nulls)
-        education: (raw.education ?? []).map(edu => ({
-            degree: edu.degree ?? '', // Zod default takes precedence if value is null/undefined
-            institution: edu.institution ?? '',
-            graduationYear: edu.graduationYear ?? '',
-            details: edu.details ?? null, // Keep details optional
-        })),
-        // Experience (ensure array format and handle nulls)
-        experience: (raw.experience ?? []).map(exp => ({
-            jobTitle: exp.jobTitle ?? '',
-            company: exp.company ?? '',
-            startDate: exp.startDate ?? '',
-            endDate: exp.endDate ?? null, // Keep endDate optional
-            description: exp.description ?? null, // Keep description optional
-        })),
-        // Skills (map from { name: string | null }[] to { name: string | null }[])
-        skills: (raw.skills ?? []).map(skill => ({
-            name: skill.name ?? '',
-        })),
-        // Reset AI job description on load
-        jobDescriptionForAI: defaults.jobDescriptionForAI,
-    };
-};
-// --- End Normalization Function ---
-
-
- function CvBuilderPageContent() { // Renamed original content to a sub-component
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isSaving, setIsSaving] = useState(false); // Added saving state
+// Main page component managing layout and data fetching
+function CvBuilderPageContent() {
   const [isLoadingCv, setIsLoadingCv] = useState(true); // State for loading initial CV
   const { toast } = useToast();
   const { signOut, currentUser } = useAuth(); // Get signOut and currentUser
 
+  // Initialize the form using react-hook-form
   const form = useForm<CvFormData>({
     resolver: zodResolver(cvSchema),
-    // Default values will be set by the loadMostRecentCv function using normalizeResumeData
     defaultValues: normalizeResumeData(null, currentUser), // Start with empty/default normalized data
-    mode: 'onChange', // Validate on change
+    mode: 'onChange', // Validate on change for live preview updates
   });
 
-   // Function to load the most recent CV for the user
-   const loadMostRecentCv = useCallback(async (userId: string) => {
+  // Function to load the most recent CV for the user
+  const loadMostRecentCv = useCallback(async (userId: string) => {
     setIsLoadingCv(true);
     let loadedCvData: FirestoreResumeData | null = null;
     try {
         const resumesRef = collection(db, 'users', userId, 'resumes');
+        // Order by updatedAt descending, limit to 1 to get the most recent
         const q = query(resumesRef, orderBy('updatedAt', 'desc'), limit(1));
         const querySnapshot = await getDocs(q);
 
         if (!querySnapshot.empty) {
             const cvDoc = querySnapshot.docs[0];
-            loadedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData; // Cast to FirestoreResumeData
+            // Combine ID with data
+            loadedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData;
             console.log("Loaded raw CV data:", loadedCvData);
+            toast({
+                title: 'تم تحميل السيرة الذاتية',
+                description: `تم تحميل "${loadedCvData.title || 'السيرة الذاتية المحفوظة'}".`,
+            });
         } else {
             console.log("No existing CV found, will use defaults.");
+            // Optionally toast that a new CV is being created
+             toast({
+                 title: 'سيرة ذاتية جديدة',
+                 description: 'ابدأ بملء النموذج أو قم برفع ملف PDF.',
+             });
         }
     } catch (error) {
         console.error('Error loading CV:', error);
@@ -173,7 +65,7 @@ const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User 
             variant: 'destructive',
         });
     } finally {
-         // Normalize the loaded data (or null if none loaded) and reset the form
+        // Normalize the loaded data (or null if none loaded) and reset the form
         const normalizedData = normalizeResumeData(loadedCvData, currentUser);
         form.reset(normalizedData);
         console.log("Form reset with normalized data:", normalizedData);
@@ -181,124 +73,31 @@ const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User 
     }
    }, [currentUser, form, toast]); // Dependencies
 
-
    // Effect to load CV when currentUser is available
-   React.useEffect(() => {
+   useEffect(() => {
       if (currentUser?.uid) {
         loadMostRecentCv(currentUser.uid);
       } else {
-          // Handle case where user is not logged in (e.g., clear form or show login prompt)
-          // Reset form using normalization with null data
+          // Handle case where user is not logged in (should be handled by ProtectedRoute)
+          // Reset form using normalization with null data just in case
           form.reset(normalizeResumeData(null, null));
-          setIsLoadingCv(false);
+          setIsLoadingCv(false); // Stop loading if no user
       }
    }, [currentUser, loadMostRecentCv, form]); // Load when user changes
 
-
-  const { fields: experienceFields, append: appendExperience, remove: removeExperience } = useFieldArray({
-    control: form.control,
-    name: 'experience',
-  });
-
-  const { fields: educationFields, append: appendEducation, remove: removeEducation } = useFieldArray({
-    control: form.control,
-    name: 'education',
-  });
-
-  const { fields: skillFields, append: appendSkill, remove: removeSkill } = useFieldArray({
-    control: form.control,
-    name: 'skills',
-  });
-
-  // Function to format CV data into a single string for AI
-  const formatCvForAI = (data: CvFormData): string => {
-    let cvString = `الاسم: ${data.fullName}\n`;
-    cvString += `المسمى الوظيفي: ${data.jobTitle}\n`;
-    cvString += `البريد الإلكتروني: ${data.email}\n`;
-    cvString += `الهاتف: ${data.phone}\n`;
-    if (data.address) cvString += `العنوان: ${data.address}\n`;
-    cvString += `الملخص: ${data.summary}\n\n`;
-
-    cvString += "الخبرة العملية:\n";
-    (data.experience || []).forEach((exp) => { // Handle potentially undefined array
-      cvString += `- ${exp.jobTitle} في ${exp.company} (${exp.startDate} - ${exp.endDate || 'الحاضر'})\n`;
-      if (exp.description) cvString += `  ${exp.description}\n`;
-    });
-    cvString += "\n";
-
-    cvString += "التعليم:\n";
-    (data.education || []).forEach((edu) => { // Handle potentially undefined array
-      cvString += `- ${edu.degree}, ${edu.institution} (${edu.graduationYear})\n`;
-      if (edu.details) cvString += `  ${edu.details}\n`;
-    });
-    cvString += "\n";
-
-    cvString += "المهارات:\n";
-    cvString += (data.skills || []).map(skill => skill.name).join(', ') + '\n'; // Handle potentially undefined array
-
-    return cvString;
-  };
-
-  const handleEnhanceContent = async () => {
-    const jobDesc = form.getValues('jobDescriptionForAI');
-    const currentSummary = form.getValues('summary'); // Example: Enhance summary
-    const cvContent = formatCvForAI(form.getValues()); // Get full CV context
-
-    if (!jobDesc) {
-      toast({
-        title: 'خطأ',
-        description: 'الرجاء إدخال وصف وظيفي لتحسين المحتوى.',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    setIsGenerating(true);
-    try {
-       const inputData: EnhanceCvContentInput = {
-         // Pass relevant parts or the whole formatted CV
-         // Let's try enhancing the summary based on the job description and full CV context
-         cvContent: `الملخص الحالي: ${currentSummary}\n\nالسيرة الذاتية الكاملة:\n${cvContent}`,
-         jobDescription: jobDesc,
-       };
-      const result = await enhanceCvContent(inputData);
-      // Assuming the AI returns the enhanced summary in 'enhancedCvContent'
-      form.setValue('summary', result.enhancedCvContent, { shouldValidate: true });
-      toast({
-        title: 'نجاح',
-        description: 'تم تحسين ملخص السيرة الذاتية بنجاح!',
-      });
-    } catch (error) {
-      console.error('AI Enhancement Error:', error);
-      toast({
-        title: 'خطأ في التحسين',
-        description: 'حدث خطأ أثناء محاولة تحسين المحتوى. الرجاء المحاولة مرة أخرى.',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
    // Function to handle data population from PDF Uploader
-   // Uses the same normalization function
    const handlePdfParsingComplete = (parsedData: Partial<FirestoreResumeData>) => {
      console.log("Received parsed data:", parsedData);
-     // Normalize the parsed data and merge with current user info
-     // The normalizeResumeData function handles defaults and potential nulls
      const normalizedData = normalizeResumeData(parsedData as FirestoreResumeData, currentUser);
 
-     // We might want to preserve the existing resumeId if the user uploaded over an existing one
      const currentResumeId = form.getValues('resumeId');
      if (currentResumeId && !normalizedData.resumeId) {
          normalizedData.resumeId = currentResumeId;
      }
 
      try {
-         // Validate the normalized data against the form schema *before* resetting
-         // This shouldn't be strictly necessary if normalization is correct, but adds safety
          cvSchema.parse(normalizedData);
-         form.reset(normalizedData);
+         form.reset(normalizedData); // Update the entire form state
          toast({
              title: "تم ملء النموذج",
              description: "تم تحديث النموذج بالبيانات المستخرجة. الرجاء المراجعة والحفظ.",
@@ -310,573 +109,65 @@ const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User 
              description: `حدث خطأ أثناء التحقق من البيانات المستخرجة. ${error instanceof z.ZodError ? error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') : 'قد تحتاج إلى إدخالها يدويًا.'}`,
              variant: "destructive",
          });
-          // Optionally reset to a safe default state if validation fails
-          // form.reset(normalizeResumeData(null, currentUser));
      }
    };
 
 
-  async function onSubmit(values: CvFormData) {
-      if (!currentUser) {
-          toast({ title: 'خطأ', description: 'يجب تسجيل الدخول لحفظ السيرة الذاتية.', variant: 'destructive' });
-          return;
-      }
-      setIsSaving(true);
-      try {
-          // Map form data (CvFormData) back to Firestore structure (FirestoreResumeData)
-          // Note: We don't include metadata like parsingDone here, only the editable content.
-          const resumeDataToSave: Omit<FirestoreResumeData, 'createdAt' | 'updatedAt' | 'parsingDone' | 'originalFileName' | 'storagePath'> & { updatedAt: any, createdAt?: any } = {
-                userId: currentUser.uid,
-                resumeId: values.resumeId || '', // Will be set below if new
-                title: values.title,
-                personalInfo: {
-                    fullName: values.fullName,
-                    jobTitle: values.jobTitle,
-                    email: values.email, // Form email takes precedence
-                    phone: values.phone,
-                    address: values.address,
-                },
-                summary: values.summary,
-                experience: values.experience.map(exp => ({ // Clean up potential empty defaults if needed
-                    jobTitle: exp.jobTitle || null,
-                    company: exp.company || null,
-                    startDate: exp.startDate || null,
-                    endDate: exp.endDate || null,
-                    description: exp.description || null,
-                })).filter(exp => exp.jobTitle || exp.company), // Filter empty entries
-                education: values.education.map(edu => ({
-                    degree: edu.degree || null,
-                    institution: edu.institution || null,
-                    graduationYear: edu.graduationYear || null,
-                    details: edu.details || null,
-                })).filter(edu => edu.degree || edu.institution), // Filter empty entries
-                skills: values.skills.map(skill => ({
-                    name: skill.name || null,
-                 })).filter(skill => skill.name), // Filter empty entries
-                 // Add other fields if they are part of FirestoreResumeData and CvFormData
-                 languages: [], // Default empty if not in form
-                 hobbies: [],   // Default empty if not in form
-                 customSections: [], // Default empty if not in form
-                 updatedAt: serverTimestamp(), // Always update timestamp
-          };
-
-           let docRef;
-           if (values.resumeId) {
-               // Update existing document
-               docRef = doc(db, 'users', currentUser.uid, 'resumes', values.resumeId);
-               // Merge update to avoid overwriting metadata fields like originalFileName etc.
-               // Note: serverTimestamp cannot be merged, so we use updateDoc directly here.
-               // It's generally safer to fetch the doc, merge in code, then set, but updateDoc works for this structure.
-               await updateDoc(docRef, resumeDataToSave);
-               toast({ title: 'تم التحديث', description: 'تم تحديث سيرتك الذاتية بنجاح.' });
-               console.log('CV Updated:', values.resumeId);
-           } else {
-               // Create new document
-               const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
-               docRef = doc(resumesCollectionRef); // Auto-generate ID
-               resumeDataToSave.resumeId = docRef.id; // Store the generated ID
-               (resumeDataToSave as any).createdAt = serverTimestamp(); // Add createdAt for new docs
-               // Also add default metadata for new docs created via form
-               const fullDataToSave = {
-                   ...resumeDataToSave,
-                   parsingDone: false, // Not parsed via PDF upload
-                   originalFileName: null,
-                   storagePath: null,
-               }
-               await setDoc(docRef, fullDataToSave);
-               form.setValue('resumeId', docRef.id); // Update form state with the new ID
-               toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية بنجاح.' });
-               console.log('CV Saved:', docRef.id);
-           }
-
-      } catch (error) {
-          console.error('Error saving CV:', error);
-          toast({
-              title: 'خطأ في الحفظ',
-              description: 'لم نتمكن من حفظ السيرة الذاتية. الرجاء المحاولة مرة أخرى.',
-              variant: 'destructive',
-          });
-      } finally {
-          setIsSaving(false);
-      }
-  }
-
-  // Display loading indicator while fetching CV data
-  if (isLoadingCv) {
-     return (
-       <div className="flex min-h-[calc(100vh-100px)] items-center justify-center">
-         <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <p className='mr-4 text-muted-foreground'>جاري تحميل بيانات السيرة الذاتية...</p>
-       </div>
-     );
-   }
-
-  // Watch the resumeId field to update the button text
-  const resumeId = form.watch('resumeId');
-
+   // Get current form data for the preview component
+   const currentFormData = form.watch();
 
   return (
-     <div className="container mx-auto p-4 md:p-8">
-      {/* Moved Form provider to wrap header and the rest of the form */}
-      <Form {...form}>
-        <header className="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4">
-          <div className="text-center sm:text-right flex-grow"> {/* Adjusted alignment */}
-            <h1 className="text-3xl font-bold text-primary mb-2">صانع السيرة الذاتية العربي</h1>
-            <p className="text-muted-foreground">أنشئ سيرتك الذاتية الاحترافية بسهولة مع تحسينات الذكاء الاصطناعي</p>
-          </div>
-          {currentUser && (
-              <div className='flex items-center gap-2'>
-                 {/* Display current CV title being edited - NOW WRAPPED IN FORM */}
-                  <FormField
-                      control={form.control}
-                      name="title"
-                      render={({ field }) => (
-                        <FormItem className="w-48"> {/* Limit width */}
-                          {/* <FormLabel className='text-xs text-muted-foreground'>عنوان السيرة</FormLabel> */}
-                          <FormControl>
-                            <Input placeholder="عنوان السيرة الذاتية" {...field} className="h-9 text-sm"/>
-                          </FormControl>
-                          <FormMessage className="text-xs"/>
-                        </FormItem>
-                      )}
-                    />
-                  <Button variant="ghost" onClick={signOut} size="sm">
-                      <LogOut className="ml-2 h-4 w-4" />
-                      تسجيل الخروج
-                  </Button>
-              </div>
-          )}
+     // Main container with responsive grid layout
+    <div className="flex flex-col h-screen bg-muted/40">
+         {/* Header Section */}
+        <header className="flex h-[60px] items-center justify-between border-b bg-background px-6 py-2 shrink-0">
+            <div className="flex items-center gap-4">
+                <h1 className="text-xl font-semibold text-primary">صانع السيرة الذاتية العربي</h1>
+                {/* You can add a logo here if needed */}
+            </div>
+            {currentUser && (
+                <div className="flex items-center gap-2">
+                     <span className="text-sm text-muted-foreground hidden md:inline">
+                        {currentUser.displayName || currentUser.email}
+                     </span>
+                    <Button variant="ghost" onClick={signOut} size="sm">
+                        <LogOut className="ml-2 h-4 w-4" />
+                        تسجيل الخروج
+                    </Button>
+                </div>
+            )}
         </header>
 
-        {/* PDF Uploader Section */}
-        <div className="mb-8">
-           <PdfUploader onParsingComplete={handlePdfParsingComplete} />
-        </div>
+        {/* Main Content Area (Grid for large screens, Flex for smaller) */}
+        <main className="flex-1 grid lg:grid-cols-[1fr_1.4fr] xl:grid-cols-[1fr_1.6fr] lg:rtl:grid-cols-[1.4fr_1fr] xl:rtl:grid-cols-[1.6fr_1fr] gap-0 overflow-hidden">
+             {/* Left Pane (Preview) - Order 1 on mobile, Left on desktop */}
+             <section
+               className="bg-white shadow-lg lg:shadow-none lg:border-l lg:rtl:border-l-0 lg:rtl:border-r border-border overflow-y-auto hide-scrollbar order-2 lg:order-1"
+               dir="ltr" // Force LTR for the preview pane content
+               >
+                {/* Pass form data to the preview component */}
+                <CvPreview data={currentFormData} />
+             </section>
 
-        {/* The rest of the form is now inside the Form provider */}
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
-          {/* Personal Information Section */}
-          <Card>
-            <CardHeader>
-              <CardTitle>المعلومات الشخصية</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <FormField
-                control={form.control}
-                name="fullName"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>الاسم الكامل</FormLabel>
-                    <FormControl>
-                      <Input placeholder="مثال: محمد أحمد عبدالله" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="jobTitle"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>المسمى الوظيفي</FormLabel>
-                    <FormControl>
-                      <Input placeholder="مثال: مهندس برمجيات" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                 <FormField
-                    control={form.control}
-                    name="email"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>البريد الإلكتروني</FormLabel>
-                        <FormControl>
-                           {/* Make email read-only if logged in */}
-                          <Input type="email" placeholder="example@mail.com" {...field} readOnly={!!currentUser} className={currentUser ? 'cursor-not-allowed opacity-70' : ''}/>
-                        </FormControl>
-                         {currentUser && <FormDescription>لا يمكن تغيير البريد الإلكتروني بعد تسجيل الدخول.</FormDescription>}
-                        <FormMessage />
-                      </FormItem>
-                    )}
+             {/* Right Pane (Form) - Order 1 on mobile, Right on desktop */}
+             <section className="overflow-y-auto hide-scrollbar order-1 lg:order-2">
+                 {/* Pass form instance and handlers to the form component */}
+                 <CvForm
+                     form={form}
+                     isLoadingCv={isLoadingCv}
+                     handlePdfParsingComplete={handlePdfParsingComplete}
                   />
-                  <FormField
-                    control={form.control}
-                    name="phone"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>رقم الهاتف</FormLabel>
-                        <FormControl>
-                          <Input placeholder="+966 5X XXX XXXX" {...field} dir="ltr" className="text-right"/>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-               </div>
-              <FormField
-                control={form.control}
-                name="address"
-                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>العنوان (اختياري)</FormLabel>
-                    <FormControl>
-                      {/* Handle null value */}
-                      <Input placeholder="مثال: الرياض، المملكة العربية السعودية" {...field} value={field.value ?? ''} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-               <FormField
-                control={form.control}
-                name="summary"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>الملخص الشخصي</FormLabel>
-                    <FormControl>
-                      <Textarea
-                        placeholder="اكتب نبذة مختصرة عن خبراتك وأهدافك المهنية..."
-                        className="resize-y min-h-[100px]"
-                        {...field}
-                      />
-                    </FormControl>
-                     <FormDescription>
-                        أدخل الوصف الوظيفي أدناه وانقر على "تحسين بالذكاء الاصطناعي" لتحسين هذا الملخص.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </CardContent>
-          </Card>
-
-         {/* AI Enhancement Section */}
-          <Card>
-             <CardHeader>
-               <CardTitle>تحسين المحتوى بالذكاء الاصطناعي</CardTitle>
-             </CardHeader>
-             <CardContent className="space-y-4">
-                <FormField
-                    control={form.control}
-                    name="jobDescriptionForAI"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>الوصف الوظيفي للوظيفة المستهدفة</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder="الصق هنا الوصف الوظيفي للوظيفة التي تتقدم لها..."
-                            className="resize-y min-h-[150px]"
-                             // Handle null value for textarea
-                             value={field.value ?? ''}
-                             onChange={field.onChange}
-                             onBlur={field.onBlur}
-                             name={field.name}
-                             ref={field.ref}
-                          />
-                        </FormControl>
-                         <FormDescription>
-                            سيقوم الذكاء الاصطناعي باستخدام هذا الوصف لتحسين محتوى سيرتك الذاتية (مثل الملخص).
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                 <Button
-                    type="button"
-                    onClick={handleEnhanceContent}
-                    disabled={isGenerating || !form.watch('jobDescriptionForAI')}
-                    className="bg-accent hover:bg-accent/90 text-accent-foreground"
-                  >
-                    {isGenerating ? (
-                      <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-                    ) : (
-                       <Wand2 className="ml-2 h-4 w-4" /> // Swapped mr to ml for RTL
-                    )}
-                    {isGenerating ? 'جاري التحسين...' : 'تحسين بالذكاء الاصطناعي'}
-                  </Button>
-             </CardContent>
-          </Card>
-
-          {/* Work Experience Section */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>الخبرة العملية</CardTitle>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => appendExperience(experienceSchema.parse({}))} // Use schema default
-              >
-                <PlusCircle className="ml-2 h-4 w-4" /> {/* Swapped mr to ml */}
-                إضافة خبرة
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-6">
-               {!experienceFields || experienceFields.length === 0 && (
-                    <p className="text-muted-foreground text-center py-4">لم تتم إضافة أي خبرة عملية بعد.</p>
-               )}
-              {experienceFields.map((field, index) => (
-                <div key={field.id} className="space-y-4 p-4 border rounded-md relative group">
-                   <FormField
-                      control={form.control}
-                      name={`experience.${index}.jobTitle`}
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>المسمى الوظيفي</FormLabel>
-                          <FormControl>
-                            <Input placeholder="مثال: مطور واجهة أمامية" {...field} value={field.value ?? ''} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                     <FormField
-                      control={form.control}
-                      name={`experience.${index}.company`}
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>الشركة</FormLabel>
-                          <FormControl>
-                            <Input placeholder="مثال: شركة تقنية ناشئة" {...field} value={field.value ?? ''} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                         <FormField
-                            control={form.control}
-                            name={`experience.${index}.startDate`}
-                            render={({ field }) => (
-                              <FormItem>
-                                <FormLabel>تاريخ البدء</FormLabel>
-                                <FormControl>
-                                  {/* Consider using a date picker component */}
-                                  <Input placeholder="مثال: يناير 2020" {...field} value={field.value ?? ''} />
-                                </FormControl>
-                                <FormMessage />
-                              </FormItem>
-                            )}
-                          />
-                          <FormField
-                            control={form.control}
-                            name={`experience.${index}.endDate`}
-                             render={({ field }) => (
-                              <FormItem>
-                                <FormLabel>تاريخ الانتهاء (اتركه فارغًا للحالي)</FormLabel>
-                                <FormControl>
-                                   {/* Handle null value */}
-                                  <Input placeholder="مثال: ديسمبر 2022" {...field} value={field.value ?? ''} />
-                                </FormControl>
-                                <FormMessage />
-                              </FormItem>
-                            )}
-                          />
-                     </div>
-                     <FormField
-                      control={form.control}
-                      name={`experience.${index}.description`}
-                       render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>الوصف (اختياري)</FormLabel>
-                          <FormControl>
-                             <Textarea
-                                placeholder="صف مهامك وإنجازاتك الرئيسية..."
-                                {...field}
-                                // Handle null value by providing empty string if null/undefined
-                                value={field.value ?? ''}
-                                />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  <Button
-                    type="button"
-                    variant="ghost" // Changed to ghost for less visual noise
-                    size="icon"
-                    onClick={() => removeExperience(index)}
-                    className="absolute top-2 left-2 w-7 h-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity" // Position top-left for RTL, hide until hover
-                    aria-label="حذف الخبرة"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          {/* Education Section */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>التعليم</CardTitle>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => appendEducation(educationSchema.parse({}))} // Use schema default
-              >
-                 <PlusCircle className="ml-2 h-4 w-4" /> {/* Swapped mr to ml */}
-                 إضافة تعليم
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {!educationFields || educationFields.length === 0 && (
-                 <p className="text-muted-foreground text-center py-4">لم تتم إضافة أي مؤهلات علمية بعد.</p>
-              )}
-              {educationFields.map((field, index) => (
-                <div key={field.id} className="space-y-4 p-4 border rounded-md relative group">
-                  <FormField
-                    control={form.control}
-                    name={`education.${index}.degree`}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>الشهادة أو الدرجة العلمية</FormLabel>
-                        <FormControl>
-                          <Input placeholder="مثال: بكالوريوس علوم الحاسب" {...field} value={field.value ?? ''} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                   <FormField
-                    control={form.control}
-                    name={`education.${index}.institution`}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>المؤسسة التعليمية</FormLabel>
-                        <FormControl>
-                          <Input placeholder="مثال: جامعة الملك سعود" {...field} value={field.value ?? ''} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name={`education.${index}.graduationYear`}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>سنة التخرج</FormLabel>
-                        <FormControl>
-                           {/* Consider using a year picker */}
-                          <Input placeholder="مثال: 2019" {...field} value={field.value ?? ''} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name={`education.${index}.details`}
-                     render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>تفاصيل إضافية (اختياري)</FormLabel>
-                        <FormControl>
-                           <Textarea
-                            placeholder="مثال: مشروع التخرج، مرتبة الشرف..."
-                            {...field}
-                             // Handle null value
-                             value={field.value ?? ''}
-                            />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                 <Button
-                    type="button"
-                    variant="ghost" // Changed to ghost
-                    size="icon"
-                    onClick={() => removeEducation(index)}
-                    className="absolute top-2 left-2 w-7 h-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity" // Position top-left for RTL, hide until hover
-                    aria-label="حذف التعليم"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          {/* Skills Section */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>المهارات</CardTitle>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                 onClick={() => appendSkill(skillSchema.parse({}))} // Use schema default
-              >
-                 <PlusCircle className="ml-2 h-4 w-4" /> {/* Swapped mr to ml */}
-                 إضافة مهارة
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <FormDescription>أضف المهارات الهامة ذات الصلة بالوظائف المستهدفة.</FormDescription>
-              {!skillFields || skillFields.length === 0 && (
-                   <p className="text-muted-foreground text-center py-4">لم تتم إضافة أي مهارات بعد.</p>
-              )}
-              {skillFields.map((field, index) => (
-                 <div key={field.id} className="flex items-center gap-2 group">
-                    <FormField
-                      control={form.control}
-                      name={`skills.${index}.name`}
-                      render={({ field }) => (
-                        <FormItem className="flex-grow">
-                           {/* Hide label for subsequent items */}
-                          <FormLabel className="sr-only">المهارة</FormLabel>
-                          <FormControl>
-                            <Input placeholder={index === 0 ? "مثال: JavaScript, القيادة, حل المشكلات" : "مهارة أخرى..."} {...field} value={field.value ?? ''}/>
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeSkill(index)}
-                       className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity w-7 h-7"
-                       aria-label="حذف المهارة"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                 </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          <Separator />
-
-          <div className="flex justify-end">
-            <Button type="submit" size="lg" className="bg-primary hover:bg-primary/90" disabled={isSaving}>
-               {isSaving ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Save className="ml-2 h-4 w-4" />}
-              {isSaving ? 'جاري الحفظ...' : (resumeId ? 'تحديث السيرة الذاتية' : 'حفظ السيرة الذاتية')}
-            </Button>
-             {/* Add Preview/Download button later */}
-          </div>
-        </form>
-      </Form> {/* Close the Form provider */}
+             </section>
+        </main>
     </div>
   );
 }
 
-
+// Wrap the main content with ProtectedRoute
 export default function Home() {
-  // Wrap the CV builder content with ProtectedRoute
   return (
     <ProtectedRoute>
       <CvBuilderPageContent />
     </ProtectedRoute>
   );
 }
-
-    
-
