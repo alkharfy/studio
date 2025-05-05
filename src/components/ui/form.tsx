@@ -44,13 +44,28 @@ const FormField = <
 const useFormField = () => {
   const fieldContext = React.useContext(FormFieldContext)
   const itemContext = React.useContext(FormItemContext)
-  const { getFieldState, formState } = useFormContext()
+  const RHFContext = useFormContext() // Get the whole context object
+
+  // Explicitly check if the context is available
+  if (!RHFContext) {
+      // This error means useFormField is used outside of the FormProvider (<Form>)
+      // which should not happen if the structure in page.tsx is correct.
+      throw new Error("useFormField must be used within a FormProvider component (e.g., <Form {...form}>).");
+  }
+
+  // Destructure only if context exists
+  const { getFieldState, formState } = RHFContext;
 
   const fieldState = getFieldState(fieldContext.name, formState)
 
+  // Ensure other contexts are also available (though less likely to be the issue here)
   if (!fieldContext) {
     throw new Error("useFormField should be used within <FormField>")
   }
+  if (!itemContext) {
+    throw new Error("useFormField should be used within <FormItem>")
+  }
+
 
   const { id } = itemContext
 
