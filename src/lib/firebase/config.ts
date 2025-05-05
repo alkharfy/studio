@@ -3,6 +3,7 @@
 import { initializeApp, getApps, getApp, type FirebaseOptions } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth'; // Added connectAuthEmulator
 import { getFirestore, enableIndexedDbPersistence, connectFirestoreEmulator } from 'firebase/firestore'; // Import persistence and emulator connector
+import { getStorage, connectStorageEmulator } from 'firebase/storage'; // Import Firebase Storage and emulator connector
 // import { getAnalytics } from "firebase/analytics"; // Uncomment if Analytics is needed
 
 // Your web app's Firebase configuration from environment variables
@@ -20,7 +21,7 @@ const firebaseConfig: FirebaseOptions = {
 
 // Validate required config values only once during initialization
 function validateConfig(config: FirebaseOptions) {
-    const requiredKeys: (keyof FirebaseOptions)[] = ['apiKey', 'authDomain', 'projectId'];
+    const requiredKeys: (keyof FirebaseOptions)[] = ['apiKey', 'authDomain', 'projectId', 'storageBucket']; // Added storageBucket
     let isValid = true;
     for (const key of requiredKeys) {
         if (!config[key]) {
@@ -37,6 +38,7 @@ let app: ReturnType<typeof initializeApp>;
 // Handle potential errors during initialization appropriately in a real app.
 let authInstance!: ReturnType<typeof getAuth>;
 let dbInstance!: ReturnType<typeof getFirestore>;
+let storageInstance!: ReturnType<typeof getStorage>; // Added storage instance
 // let analytics: ReturnType<typeof getAnalytics> | null = null; // Uncomment if needed
 const googleProviderInstance = new GoogleAuthProvider(); // Initialize provider once
 
@@ -48,6 +50,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
             app = initializeApp(firebaseConfig);
             authInstance = getAuth(app);
             dbInstance = getFirestore(app);
+            storageInstance = getStorage(app); // Initialize Storage
             // analytics = getAnalytics(app); // Uncomment if needed
 
             // --- Configuration MUST happen immediately after getting instances ---
@@ -58,7 +61,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
             const useEmulator = process.env.NEXT_PUBLIC_USE_EMULATOR === 'true';
 
             if (useEmulator) {
-                console.log("Connecting to Firebase Emulators (Firestore: 8080, Auth: 9099)...");
+                console.log("Connecting to Firebase Emulators (Firestore: 8080, Auth: 9099, Storage: 9199)...");
                 // Make sure the ports match your firebase.json configuration
                 try {
                     // Use 127.0.0.1 instead of localhost to avoid potential IPv6 issues on some systems
@@ -69,6 +72,11 @@ if (typeof window !== 'undefined' && !getApps().length) {
                     // Ensure the URL scheme (http) is correct and matches emulator settings
                     connectAuthEmulator(authInstance, 'http://127.0.0.1:9099', { disableWarnings: true });
                     console.log("Connected to Auth Emulator.");
+
+                     // Connect Storage Emulator
+                    connectStorageEmulator(storageInstance, '127.0.0.1', 9199);
+                    console.log("Connected to Storage Emulator.");
+
                 } catch (emulatorError) {
                     console.error("Error connecting to emulators:", emulatorError);
                     // Decide how to handle emulator connection failure (e.g., fallback to production?)
@@ -112,6 +120,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
   app = getApp();
   authInstance = getAuth(app);
   dbInstance = getFirestore(app);
+  storageInstance = getStorage(app); // Get existing storage instance
   // analytics = getAnalytics(app); // Uncomment if needed
   // Note: Emulator/Persistence settings from the *initial* load persist.
   // Re-running connectEmulator or enablePersistence here would cause the error.
@@ -126,6 +135,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
 // Ensure error handling above prevents app execution if init fails.
 export const auth = authInstance;
 export const db = dbInstance;
+export const storage = storageInstance; // Export storage
 export const googleProvider = googleProviderInstance;
 // Export app if needed
 // export { app };

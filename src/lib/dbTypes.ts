@@ -1,3 +1,4 @@
+
 // src/lib/dbTypes.ts
 import type { Timestamp } from 'firebase/firestore';
 
@@ -12,32 +13,38 @@ export interface UserProfile {
 export interface Resume {
   resumeId: string;
   title: string;
-  userId: string; // Added to link resume to user
+  userId: string; // Link resume back to the user
   personalInfo: {
-    fullName?: string;
-    jobTitle?: string;
-    email?: string;
-    phone?: string;
-    address?: string;
+    fullName?: string | null; // Make fields optional/nullable where appropriate
+    jobTitle?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    address?: string | null;
   };
-  summary: string; // Changed from objective for consistency with form
+  summary: string;
   education: {
-    degree?: string;
-    institution?: string;
-    graduationYear?: string;
-    details?: string;
-  }[];
+    degree?: string | null;
+    institution?: string | null;
+    graduationYear?: string | null;
+    details?: string | null;
+  }[]; // Array of education objects
   experience: {
-    jobTitle?: string;
-    company?: string;
-    startDate?: string;
-    endDate?: string;
-    description?: string;
-  }[];
-  skills: { name?: string }[]; // Changed to object array for consistency
-  languages?: string[]; // Keep as string array or change if needed
-  hobbies?: string[]; // Keep as string array or change if needed
-  customSections?: { title: string; content: string }[];
+    jobTitle?: string | null;
+    company?: string | null;
+    startDate?: string | null;
+    endDate?: string | null; // Can be null if current job
+    description?: string | null;
+  }[]; // Array of experience objects
+  skills: { name?: string | null }[]; // Array of skill objects
+  languages?: string[] | null; // Optional array of strings
+  hobbies?: string[] | null; // Optional array of strings
+  customSections?: { title: string; content: string }[] | null; // Optional array of custom sections
+  parsingDone?: boolean; // Flag from PDF parsing simulation/function
+  originalFileName?: string | null; // Name of the uploaded PDF
+  storagePath?: string | null; // Path to the PDF in Cloud Storage
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
+
+
+    
