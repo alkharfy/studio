@@ -1,7 +1,7 @@
 // src/lib/firebase/config.ts
 import { initializeApp, getApps, type FirebaseOptions, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth'; // Added connectAuthEmulator
-import { getFirestore, connectFirestoreEmulator, enableIndexedDbPersistence } from 'firebase/firestore'; // Import persistence and emulator connector
+import { getFirestore, connectFirestoreEmulator, type FirestoreSettings, persistentLocalCache, persistentMultipleTabManager, initializeFirestore } from 'firebase/firestore'; // Import persistence, emulator connector, and initializeFirestore
 import { getStorage, connectStorageEmulator } from 'firebase/storage'; // Import Firebase Storage and emulator connector
 // import { getAnalytics } from "firebase/analytics"; // Uncomment if Analytics is needed
 
@@ -36,7 +36,7 @@ let app: ReturnType<typeof initializeApp>;
 // Use definite assignment assertion (!) assuming initialization must succeed for the app to work.
 // Handle potential errors during initialization appropriately in a real app.
 let authInstance!: ReturnType<typeof getAuth>;
-let dbInstance!: ReturnType<typeof getFirestore>;
+let dbInstance!: ReturnType<typeof getFirestore>; // Firestore type remains the same
 let storageInstance!: ReturnType<typeof getStorage>; // Added storage instance
 // let analytics: ReturnType<typeof getAnalytics> | null = null; // Uncomment if needed
 const googleProviderInstance = new GoogleAuthProvider(); // Initialize provider once
@@ -48,7 +48,17 @@ if (typeof window !== 'undefined' && !getApps().length) {
         try {
             app = initializeApp(firebaseConfig);
             authInstance = getAuth(app);
-            dbInstance = getFirestore(app);
+            
+            // Define Firestore persistence settings
+            const firestorePersistenceSettings: FirestoreSettings = {
+                localCache: persistentLocalCache({
+                    tabManager: persistentMultipleTabManager(),
+                }),
+            };
+            // Initialize Firestore with persistence settings
+            dbInstance = initializeFirestore(app, firestorePersistenceSettings);
+            console.log("Firestore initialized with persistence settings.");
+
             storageInstance = getStorage(app); // Initialize Storage
             // analytics = getAnalytics(app); // Uncomment if needed
 
@@ -84,23 +94,6 @@ if (typeof window !== 'undefined' && !getApps().length) {
                  console.log("Firebase Emulators not enabled (NODE_ENV is not 'development' or NEXT_PUBLIC_USE_EMULATOR is not 'true'). Connecting to production Firebase.");
             }
 
-
-            // Configure offline persistence (only works in browser environments)
-            if (typeof window !== 'undefined') { // Ensure window object exists for browser environment
-                enableIndexedDbPersistence(dbInstance, { synchronizeTabs: true})
-                    .then(() => console.log("Firestore offline persistence enabled with tab synchronization."))
-                    .catch((err) => {
-                        if (err.code === 'failed-precondition') {
-                            console.warn("Firestore offline persistence couldn't be enabled (failed-precondition - likely already active or multiple tabs).");
-                        } else if (err.code === 'unimplemented') {
-                             console.warn("Firestore offline persistence couldn't be enabled (unimplemented - browser doesn't support).");
-                        } else {
-                            console.error("Error enabling Firestore offline persistence:", err);
-                        }
-                    });
-            }
-
-
              // --- End of immediate configuration ---
 
         } catch (e) {
@@ -120,20 +113,9 @@ if (typeof window !== 'undefined' && !getApps().length) {
   storageInstance = getStorage(app); // Get existing storage instance
 
   // For existing instances, persistence should have been enabled on first init.
-  // Attempting to enable it again might lead to "failed-precondition" if already enabled.
-  // It's generally safe to call it, as it handles this gracefully.
-   if (typeof window !== 'undefined') {
-        enableIndexedDbPersistence(dbInstance, { synchronizeTabs: true })
-          .then(() => console.log("Firestore offline persistence re-confirmed for existing app instance with tab synchronization."))
-          .catch((err) => {
-              if (err.code === 'failed-precondition') {
-                  // This is expected if persistence is already active
-                  console.info("Firestore offline persistence (existing app): already active or multiple tabs.");
-              } else {
-                  console.error("Error re-confirming Firestore offline persistence (existing app):", err);
-              }
-          });
-  }
+  // We don't need to call initializeFirestore again.
+  console.log("Firebase app already initialized. Persistence settings should be active from initial setup.");
+
   // analytics = getAnalytics(app); // Uncomment if needed
 } else {
     // Handle server-side or non-browser environment if necessary
