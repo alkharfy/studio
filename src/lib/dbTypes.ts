@@ -1,4 +1,3 @@
-
 // src/lib/dbTypes.ts
 import type { Timestamp } from 'firebase/firestore';
 
@@ -11,72 +10,71 @@ export interface UserProfile {
 }
 
 // Structure aligning with Firestore data written by the updated Cloud Function
-// Use alias FirestoreResumeData to distinguish from potential UI/form types if needed
-export interface Resume { // Keep name Resume, but structure matches Firestore output
-  resumeId: string;
-  userId: string;
-  title: string;
+// This interface should exactly match what the cloud function saves.
+export interface Resume {
+  resumeId: string; // Added by frontend or generated before write
+  userId: string; // Added by frontend
 
-  personalInfo?: { // Keep optional for flexibility
+  // Fields expected from Vertex AI extraction (can be null if not found)
+  title?: string | null;
+  personalInfo?: {
     fullName?: string | null;
-    jobTitle?: string | null; // Added by function
     email?: string | null;
     phone?: string | null;
     address?: string | null;
+    jobTitle?: string | null; // Added jobTitle based on form/schema
   } | null;
+  summary?: string | null; // Mapped from 'objective' in older versions? Function now uses 'summary'
+  objective?: string | null; // Keep for backward compatibility or if prompt extracts it
 
-  summary?: string | null; // Changed from 'objective' based on function update
-  objective?: string | null; // Keep objective field if it might still be populated by older versions or direct writes
-
-  education?: { // Keep optional
+  // Arrays from extraction - ensure structure matches function output
+  education?: {
     degree?: string | null;
-    institution?: string | null; // Mapped from institute
-    institute?: string | null; // Keep institute for backward compatibility?
-    graduationYear?: string | null; // Mapped from year
-    year?: string | null; // Keep year for backward compatibility?
+    institute?: string | null; // Function might use 'institute'
+    institution?: string | null; // Form uses 'institution' - handle mapping
+    year?: string | null; // Function might use 'year'
+    graduationYear?: string | null; // Form uses 'graduationYear' - handle mapping
     details?: string | null; // Added details field
   }[] | null;
 
-  experience?: { // Keep optional
-    jobTitle?: string | null; // Mapped from title
-    title?: string | null; // Keep title for backward compatibility?
+  experience?: {
+    title?: string | null; // Function might use 'title'
+    jobTitle?: string | null; // Form uses 'jobTitle' - handle mapping
     company?: string | null;
-    startDate?: string | null; // Mapped from start
-    start?: string | null; // Keep start for backward compatibility?
-    endDate?: string | null; // Mapped from end
-    end?: string | null; // Keep end for backward compatibility?
+    start?: string | null; // Function might use 'start'
+    startDate?: string | null; // Form uses 'startDate' - handle mapping
+    end?: string | null; // Function might use 'end'
+    endDate?: string | null; // Form uses 'endDate' - handle mapping
     description?: string | null;
   }[] | null;
 
-  // Skills expected as array of objects { name: string | null } based on function output
-  skills?: {
-      name?: string | null;
+   // Skills: function prompt asks for string[], but writes { name: string }[] after mapping
+   // Let's assume the function *writes* { name: string }[] now.
+   skills?: {
+       name?: string | null;
    }[] | null;
 
-  // Languages expected as array of objects { name: string | null, level: string | null } based on function output
-  languages?: {
-      name?: string | null;
-      level?: string | null;
-  }[] | null;
-
-   // Hobbies expected as string[] based on function output
-  hobbies?: string[] | null;
-
-  // Custom sections added based on function schema (array of objects)
-  customSections?: {
-    title?: string | null;
-    content?: string | null;
+   // Languages: function prompt asks for { name, level }[]
+   languages?: {
+       name?: string | null;
+       level?: string | null;
    }[] | null;
 
-  // --- Metadata ---
-  parsingDone?: boolean; // Added by function
+    // Hobbies: function prompt asks for string[]
+   hobbies?: string[] | null;
+
+   // Custom sections: function prompt doesn't explicitly ask, but Firestore structure allows it
+   customSections?: {
+     title?: string | null;
+     content?: string | null;
+    }[] | null;
+
+
+  // --- Metadata set by Cloud Function / Frontend ---
+  parsingDone?: boolean; // Set by function
+  parsingError?: string | null; // Set by function on failure
   originalFileName?: string | null; // Added by function
-  storagePath?: string | null; // Added by function
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
+  storagePath?: string | null; // Set by function
+  createdAt: Timestamp; // Set on creation (function or frontend)
+  updatedAt: Timestamp; // Set on creation/update
 }
-
-// You can keep the FirestoreResumeData alias if you anticipate
-// having a different structure for UI state vs Firestore storage.
-// For now, Resume directly reflects the Firestore structure.
-// export type FirestoreResumeData = Resume;
