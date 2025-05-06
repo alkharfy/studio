@@ -76,17 +76,22 @@ interface CvFormProps {
 }
 
 export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User | null): CvFormData => {
-    // Start with Zod's default values by parsing an empty object
-    const defaults = cvSchema.parse({
+    // Manually define the default structure for CvFormData
+    const defaults: CvFormData = {
+        title: 'مسودة السيرة الذاتية',
         fullName: '',
         jobTitle: '',
         email: '',
         phone: '',
+        address: null, // Optional and nullable
         summary: '',
-        title: 'مسودة السيرة الذاتية', // Ensure title has a default
-        // experience, education, skills will default to empty arrays via schema
-    });
-
+        experience: [],
+        education: [],
+        skills: [],
+        yearsExperience: null, // Optional and nullable
+        jobDescriptionForAI: null, // Optional and nullable
+        // resumeId is optional and will be set if data is loaded
+    };
 
     // Override defaults with current user info if available
     if (currentUser) {
@@ -956,3 +961,4 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     </div>
   );
 }
+
