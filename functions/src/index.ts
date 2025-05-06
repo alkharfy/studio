@@ -27,11 +27,15 @@ const docAiRegion = process.env.DOC_AI_REGION || 'us';
 const vertexAiRegion = process.env.VERTEX_AI_REGION || 'us-central1';
 
 // --- BUCKET constant derived from project ID ---
-const BUCKET = process.env.FIREBASE_STORAGE_BUCKET || (gcpProject ? `${gcpProject}.appspot.com` : undefined);
+// Explicitly use GCLOUD_PROJECT env variable if available, otherwise functions config
+const derivedBucketName = gcpProject ? `${gcpProject}.appspot.com` : undefined;
+const BUCKET = process.env.FIREBASE_STORAGE_BUCKET || derivedBucketName;
+
 
 if (!BUCKET) {
     logger.error("FATAL: Firebase Storage Bucket is not configured (env FIREBASE_STORAGE_BUCKET or GCLOUD_PROJECT missing for default).");
     // Consider throwing an error if BUCKET is essential and cannot be determined.
+    // process.exit(1); // Stop execution if bucket cannot be determined
 } else {
     logger.info(`Targeting bucket: ${BUCKET}`);
 }
@@ -90,12 +94,12 @@ try {
 }
 
 
-// --- parseResumePdf Cloud Function (Updated for Debugging Trigger) ---
+// --- parseResumePdf Cloud Function (Updated for Trigger Debugging) ---
 export const parseResumePdf = onObjectFinalized(
     {
         region: "us-central1", // Keep region consistent or use vertexAiRegion if preferred
-        // Explicitly use the derived bucket name
-        bucket: BUCKET, // Ensure BUCKET is correctly derived above
+        // Explicitly use the derived bucket name from GCLOUD_PROJECT
+        bucket: process.env.GCLOUD_PROJECT + ".appspot.com", // Use GCP Project ID directly for bucket name
         // Explicitly filter for the desired path prefix
         eventFilters: { "object.name": "resumes_uploads/**" },
         memory: "1GiB",
@@ -103,9 +107,10 @@ export const parseResumePdf = onObjectFinalized(
         cpu: 1, // Keep CPU setting if needed
     },
     async (event: CloudEvent<StorageObjectData>) => {
-        // Add log at the very beginning to confirm trigger
+        // Add console.log at the very beginning to confirm trigger
+        console.log("🔔 TRIGGERED on", event.data.name);
+        // Also use logger for structured logging
         logger.log("🔔 TRIGGERED on", event.data.name);
-        console.log("🔔 TRIGGERED on", event.data.name); // Added console.log as well for visibility
 
         // --- Essential Checks ---
         if (!docai || !textGen) {
