@@ -147,6 +147,15 @@ function CvBuilderPageContent() {
                  // Pre-populate the ref if the loaded CV was already processed successfully
                  if (loadedCvData.parsingDone && !loadedCvData.parsingError) {
                       processedResumeIdRef.current = loadedCvData.resumeId;
+                 } else if (loadedCvData.parsingError) {
+                    // Also mark as processed if there was an error on load
+                    processedResumeIdRef.current = loadedCvData.resumeId;
+                    toast({
+                         title: "❌ تعذّر استخراج البيانات تلقائيًا",
+                         description: `لم نتمكن من استخراج البيانات من هذا الملف (${loadedCvData.parsingError}). الرجاء ملء النموذج يدويًا.`,
+                         variant: "destructive",
+                         duration: 7000,
+                     });
                  }
 
             } else {

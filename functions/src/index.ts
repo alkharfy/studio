@@ -156,41 +156,59 @@ export const parseResumePdf = onObjectFinalized(
             // Limit OCR text to 15k characters to stay within token budget
             const textSnippet = text.slice(0, 15000);
 
-            const prompt = `
-                Extract the following résumé fields in STRICT JSON format only, without any introductory text, code block markdown (\`\`\`json ... \`\`\`), or explanation. The output MUST be a single valid JSON object.
-                If a field is not found, represent it as 'null' or an empty array [] as appropriate according to the schema.
-                Maintain the original language (especially Arabic) for all extracted values.
+            const prompt = `/* ----------  Vertex-AI Prompt  ---------- */
 
-                Schema:
-                {
-                  "title": "string | null",
-                  "personalInfo": { "fullName": "string | null", "email": "string | null", "phone": "string | null", "address": "string | null" } | null,
-                  "objective": "string | null",
-                  "education": [ { "degree": "string | null", "institute": "string | null", "year": "string | null" } ] | null,
-                  "experience": [ { "title": "string | null", "company": "string | null", "start": "string | null", "end": "string | null", "description": "string | null" } ] | null,
-                  "skills": ["string"] | null,
-                  "languages": [ { "name": "string | null", "level": "string | null" } ] | null,
-                  "hobbies": ["string"] | null
-                }
+You are an expert Arabic/English résumé parser.
+Return **ONLY** minified JSON that exactly matches this TypeScript type – no comments, no extra keys, no Markdown:
 
-                Example of valid JSON output (adhere to the schema strictly):
-                {
-                  "title": "مهندس برمجيات",
-                  "personalInfo": { "fullName": "أحمد محمد", "email": "ahmad@example.com", "phone": "+966555555555", "address": "الرياض، المملكة العربية السعودية" },
-                  "objective": "باحث عن وظيفة في مجال تطوير البرمجيات...",
-                  "education": [ { "degree": "بكالوريوس", "institute": "جامعة الملك سعود", "year": "2018" } ],
-                  "experience": [ { "title": "مطور برامج", "company": "شركة تقنية", "start": "2018", "end": "2020", "description": "تطوير تطبيقات..." } ],
-                  "skills": ["Java", "C++", "Python"],
-                  "languages": [ { "name": "العربية", "level": "ممتاز" }, { "name": "الإنجليزية", "level": "جيد" } ],
-                  "hobbies": ["القراءة", "السباحة"]
-                }
+type Resume = {
+  title: string,
+  personalInfo: {
+    fullName: string, email: string,
+    phone: string, address: string
+  },
+  objective: string,
+  education: { degree: string, institute: string, year: string }[],
+  experience: { title: string, company: string, start: string, end: string, description: string }[],
+  skills: string[],
+  languages: { name: string, level: string }[],
+  hobbies: string[]
+}
 
-                Text to analyse:
-                \"\"\"
-                ${textSnippet}
-                \"\"\"
+–––––––––––––––––––––––––––––––––
+★  Arabic OUTPUT REQUIRED  ★
+–––––––––––––––––––––––––––––––––
 
-                JSON Output:
+👉 **Example you MUST follow**
+INPUT snippet
+
+
+September 2018 – July 2023 Bachelor of petroleum engineering
+Suez University Grade: Excellent with honor
+EXPECTED JSON fragment
+\`\`\`json
+"education":[
+  {"degree":"بكالوريوس هندسة بترول","institute":"جامعة السويس","year":"2018–2023"}
+]
+\`\`\`
+
+👉 Another snippet
+July 2022 Production Operations Trainee
+Oasis Petroleum Company
+Analyzed daily production department workflows …
+EXPECTED JSON fragment
+\`\`\`json
+"experience":[
+    {"title": "متدرب عمليات الإنتاج", "company": "شركة الواحة للبترول", "start": "يوليو 2022", "end": null, "description": "تحليل سير العمل اليومي لقسم الإنتاج..."}
+]
+\`\`\`
+
+Text to analyse:
+\"\"\"
+${textSnippet}
+\"\"\"
+
+JSON Output:
             `; // Keep text slicing for safety
 
             logger.log("Sending request to Vertex AI (Gemini)...");
@@ -205,7 +223,8 @@ export const parseResumePdf = onObjectFinalized(
                  logger.log("🎯 Vertex AI raw response received.");
                  logger.debug("Raw Vertex AI Text Response (trimmed):", jsonString.substring(0, 500)); // Log before cleaning
 
-                 jsonString = jsonString.replace(/^```json\s*|```$/g, "").trim(); // Clean markdown fences
+                 // Remove potential markdown fences and leading/trailing whitespace
+                 jsonString = jsonString.replace(/^```json\s*|```\s*$/g, "").trim();
                  logger.debug("Cleaned Vertex AI JSON string (trimmed):", jsonString.substring(0, 500)); // Log after cleaning
 
                  try {
@@ -217,15 +236,18 @@ export const parseResumePdf = onObjectFinalized(
                      logger.error("Problematic JSON String:", jsonString); // Log the string that failed parsing
                      // Decide how to proceed: write empty data, retry, or fail?
                      // For now, we'll proceed with the empty 'parsed' object initialized earlier.
+                     parsed = { parsingError: "invalid_json_output" }; // Set error flag in parsed data
                  }
              } else {
                  logger.warn("Vertex AI response was empty or had no valid content part.");
+                  parsed = { parsingError: "empty_ai_response" }; // Set error flag
              }
 
          } catch (vertexError: any) {
              logger.error("Vertex AI processing failed:", vertexError.message || vertexError);
              logger.error("Vertex AI Error Details:", vertexError);
-             // Decide how to proceed on Vertex error. Continue with empty 'parsed' object for now.
+             // Decide how to proceed on Vertex error. Set error flag.
+             parsed = { parsingError: "vertex_ai_error" };
          } finally {
               // Clean up the temporary file regardless of Vertex AI success/failure
               try {
@@ -243,21 +265,23 @@ export const parseResumePdf = onObjectFinalized(
         const firestorePath = `users/${uid}/resumes/${resumeId}`;
         logger.log(`Generated Firestore Document ID: ${resumeId}. Path: ${firestorePath}`);
 
-        // Validate at least personalInfo.fullName exists
-        if (!parsed?.personalInfo?.fullName) {
-            logger.warn("Vertex AI extraction failed to extract fullName. Setting parsingError flag.");
+        // Validate at least personalInfo.fullName exists OR if there was a parsing error
+        if (parsed.parsingError || !parsed?.personalInfo?.fullName) {
+            const errorReason = parsed.parsingError || "missing_fullname";
+            logger.warn(`AI extraction failed or missing fullName (Reason: ${errorReason}). Setting parsingError flag.`);
             try {
                 const resumeDocRef = db.doc(firestorePath);
                 await resumeDocRef.set({
                     resumeId: resumeId,
                     userId: uid,
-                    parsingError: "empty_ai_output",
+                    parsingError: errorReason, // Use the specific error code
                     storagePath: name, // Store the GCS path
                     originalFileName: fileName, // Store original name
                     createdAt: FieldValue.serverTimestamp(), // Use FieldValue
                     updatedAt: FieldValue.serverTimestamp(), // Use FieldValue
+                    parsingDone: false, // Explicitly false when error occurs
                 });
-                logger.log(`Successfully wrote parsingError to Firestore: ${firestorePath}`);
+                logger.log(`Successfully wrote parsingError (${errorReason}) to Firestore: ${firestorePath}`);
             } catch (firestoreError: any) {
                 logger.error(`❌ Failed to write parsingError to Firestore (${firestorePath}):`, firestoreError.message || firestoreError);
                 logger.error("Firestore Write Error Details:", firestoreError);
@@ -277,15 +301,15 @@ export const parseResumePdf = onObjectFinalized(
                      // Add jobTitle from parsed if available, or default null
                     jobTitle: parsed.personalInfo?.jobTitle ?? null,
                 },
-                objective: parsed.objective ?? null,
+                 objective: parsed.objective ?? null, // Use 'objective' as per the prompt schema
                 // Ensure arrays are initialized even if null/undefined in parsed data
                  // Map institute/year from parsed to institution/graduationYear
                 education: (parsed.education ?? []).map((edu: any) => ({
                      degree: edu.degree ?? null,
                      institution: edu.institute ?? edu.institution ?? null, // Accept both names
                      graduationYear: edu.year ?? edu.graduationYear ?? null, // Accept both names
-                     details: edu.details ?? null,
-                 })),
+                     details: edu.details ?? null, // Keep details if present
+                 })).filter((edu: any) => edu.degree || edu.institution || edu.graduationYear),
                  // Map title/start/end from parsed to jobTitle/startDate/endDate
                 experience: (parsed.experience ?? []).map((exp: any) => ({
                      jobTitle: exp.title ?? exp.jobTitle ?? null, // Accept both names
@@ -293,13 +317,12 @@ export const parseResumePdf = onObjectFinalized(
                      startDate: exp.start ?? exp.startDate ?? null, // Accept both names
                      endDate: exp.end ?? exp.endDate ?? null, // Accept both names
                      description: exp.description ?? null,
-                 })),
+                 })).filter((exp: any) => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description),
                  // Skills are now expected as string[] from the prompt
-                 skills: (parsed.skills ?? []).map((skill: any) => ({
-                     name: typeof skill === 'string' ? skill : skill?.name ?? null
-                 })).filter((s: any) => s.name), // Convert back to object for consistency? Or keep as string array?
-                 // Let's keep skills as array of objects {name: string} for consistency with form
-                 // skills: (parsed.skills ?? []).filter((skill: any) => typeof skill === 'string' && skill.trim() !== ''),
+                 skills: (parsed.skills ?? []).filter((skill: any) => typeof skill === 'string' && skill.trim() !== '').map((name: string) => ({ name })), // Convert string[] to {name: string}[] for form consistency
+                 // skills: (parsed.skills ?? []).map((skill: any) => ({
+                 //     name: typeof skill === 'string' ? skill : skill?.name ?? null
+                 // })).filter((s: any) => s.name), // Original mapping if prompt returned objects
 
                 languages: (parsed.languages ?? []).map((lang: any) => ({ // Ensure structure is object {name, level}
                      name: lang.name ?? null,
@@ -308,6 +331,7 @@ export const parseResumePdf = onObjectFinalized(
                  hobbies: (parsed.hobbies ?? []).filter((hobby: any) => typeof hobby === 'string' && hobby.trim() !== ''), // Hobbies expected as string[]
                 customSections: parsed.customSections ?? [], // Add custom sections if parsed
                 parsingDone: true, // Set flag to true
+                parsingError: null, // Explicitly set error to null on success
                 storagePath: name, // Store the GCS path
                 originalFileName: fileName, // Store original name
                 createdAt: FieldValue.serverTimestamp(), // Use FieldValue
