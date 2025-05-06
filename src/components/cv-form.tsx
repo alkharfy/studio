@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useState, useCallback, useMemo } from 'react';
 // import { zodResolver } from '@hookform/resolvers/zod'; // Already in page.tsx
 import { useFieldArray, useFormContext } from 'react-hook-form';
-import type { z } from 'zod';
+import { z } from 'zod'; // Imported Zod
 import { Disclosure } from '@headlessui/react';
 import clsx from 'clsx';
 import { Button } from '@/components/ui/button';
@@ -29,13 +29,13 @@ import { doc, setDoc, collection, serverTimestamp, updateDoc } from 'firebase/fi
 import type { Resume as FirestoreResumeData } from '@/lib/dbTypes';
 import { PdfUploader } from '@/components/pdf-uploader';
 import type { User } from 'firebase/auth';
-import { getFunctions, httpsCallable, connectFunctionsEmulator, type HttpsCallableResult } from 'firebase/functions'; // Removed unused types
+import { getFunctions, httpsCallable, connectFunctionsEmulator, type HttpsCallableResult } from 'firebase/functions';
 
 // Define Zod schema for the form
 const experienceSchema = z.object({
-  jobTitle: z.string().nullable().default(''),
-  company: z.string().nullable().default(''),
-  startDate: z.string().nullable().default(''),
+  jobTitle: z.string().min(1, "يجب إدخال المسمى الوظيفي").nullable().default(''),
+  company: z.string().min(1, "يجب إدخال اسم الشركة").nullable().default(''),
+  startDate: z.string().min(1, "يجب إدخال تاريخ البدء").nullable().default(''),
   endDate: z.string().optional().nullable().default(''),
   description: z.string().optional().nullable().default(''),
 }).default({});
@@ -76,22 +76,19 @@ interface CvFormProps {
 }
 
 export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User | null): CvFormData => {
-    const defaults: CvFormData = {
-        resumeId: undefined,
-        title: 'مسودة السيرة الذاتية',
+    // Start with Zod's default values by parsing an empty object
+    const defaults = cvSchema.parse({
         fullName: '',
         jobTitle: '',
         email: '',
         phone: '',
-        address: null,
         summary: '',
-        experience: [],
-        education: [],
-        skills: [],
-        yearsExperience: null,
-        jobDescriptionForAI: null,
-    };
+        title: 'مسودة السيرة الذاتية', // Ensure title has a default
+        // experience, education, skills will default to empty arrays via schema
+    });
 
+
+    // Override defaults with current user info if available
     if (currentUser) {
       defaults.fullName = currentUser.displayName || defaults.fullName;
       defaults.email = currentUser.email || defaults.email;
@@ -102,7 +99,7 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
     console.info("[normalizeResumeData] Raw Firestore data:", raw);
 
     const normalized: CvFormData = {
-        ...defaults,
+        ...defaults, // Spread defaults first
         resumeId: raw.resumeId,
         title: raw.title || defaults.title,
         fullName: raw.personalInfo?.fullName || defaults.fullName,
@@ -110,25 +107,25 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
         email: raw.personalInfo?.email || defaults.email,
         phone: raw.personalInfo?.phone || defaults.phone,
         address: raw.personalInfo?.address || defaults.address,
-        summary: raw.summary || raw.objective || defaults.summary,
+        summary: raw.summary || raw.objective || defaults.summary, // Use summary, fallback to objective
         education: (raw.education ?? []).map(edu => ({
             degree: edu.degree ?? '',
-            institution: edu.institution ?? edu.institute ?? '',
-            graduationYear: edu.graduationYear ?? edu.year ?? '',
+            institution: edu.institution ?? edu.institute ?? '', // Handle both institution/institute
+            graduationYear: edu.graduationYear ?? edu.year ?? '', // Handle both graduationYear/year
             details: edu.details ?? '',
         })).filter(edu => edu.degree || edu.institution || edu.graduationYear),
         experience: (raw.experience ?? []).map(exp => ({
-            jobTitle: exp.jobTitle ?? exp.title ?? '',
+            jobTitle: exp.jobTitle ?? exp.title ?? '', // Handle both jobTitle/title
             company: exp.company ?? '',
-            startDate: exp.startDate ?? exp.start ?? '',
+            startDate: exp.startDate ?? exp.start ?? '', // Handle both startDate/start
             endDate: exp.endDate ?? exp.end ?? '',
             description: exp.description ?? '',
         })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description),
-        skills: (raw.skills ?? []).map(skill => ({
-            name: skill?.name ?? '',
+        skills: (raw.skills ?? []).map(skill => ({ // Ensure skills are objects {name: string}
+            name: typeof skill === 'string' ? skill : (skill?.name ?? ''),
         })).filter(skill => skill.name),
-        yearsExperience: raw.yearsExperience ?? defaults.yearsExperience, // Added from previous request
-        jobDescriptionForAI: raw.jobDescriptionForAI ?? defaults.jobDescriptionForAI, // Added from previous request
+        yearsExperience: raw.yearsExperience ?? defaults.yearsExperience,
+        jobDescriptionForAI: raw.jobDescriptionForAI ?? defaults.jobDescriptionForAI,
     };
 
      console.info("[normalizeResumeData] Normalized form data:", normalized);
@@ -145,13 +142,13 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
   const { currentUser } = useAuth();
 
   const functionsInstance = useMemo(() => {
-    if (typeof window !== 'undefined' && auth.app) {
+    if (typeof window !== 'undefined' && auth.app) { // Check auth.app as well
       const functions = getFunctions(auth.app);
       if (process.env.NEXT_PUBLIC_USE_EMULATOR === 'true') {
         try {
           connectFunctionsEmulator(functions, "127.0.0.1", 5001);
           console.info("Connected to Functions Emulator from CvForm.");
-        } catch (error: any) { // Added type for error
+        } catch (error: any) {
            if (!(error instanceof Error && error.message.includes('already connected'))) {
              console.error("Error connecting to Functions emulator from CvForm:", error);
            }
@@ -181,7 +178,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     name: 'skills',
   });
 
-  const formatCvForAI = useCallback((data: CvFormData): string => { // Wrapped in useCallback
+  const formatCvForAI = useCallback((data: CvFormData): string => {
     let cvString = `الاسم: ${data.fullName || ''}\n`;
     cvString += `المسمى الوظيفي: ${data.jobTitle || ''}\n`;
     cvString += `البريد الإلكتروني: ${data.email || ''}\n`;
@@ -209,7 +206,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     return cvString;
   }, []);
 
-   const handleAISkills = useCallback(async () => { // Wrapped in useCallback
+   const handleAISkills = useCallback(async () => {
     if (!suggestSkillsFn) {
         toast({ title: 'خطأ', description: 'خدمة اقتراح المهارات غير متاحة حالياً.', variant: 'destructive' });
         return;
@@ -259,7 +256,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     }
   }, [suggestSkillsFn, form, toast, appendSkill]);
 
-  const handleAISummary = useCallback(async () => { // Wrapped in useCallback
+  const handleAISummary = useCallback(async () => {
       if (!suggestSummaryFn) {
         toast({ title: 'خطأ', description: 'خدمة اقتراح النبذة غير متاحة حالياً.', variant: 'destructive' });
         return;
@@ -306,7 +303,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
   }, [suggestSummaryFn, form, toast]);
 
 
-  const handleEnhanceContent = useCallback(async () => { // Wrapped in useCallback
+  const handleEnhanceContent = useCallback(async () => {
     const jobDesc = form.getValues('jobDescriptionForAI');
     const currentSummary = form.getValues('summary');
     const cvContent = formatCvForAI(form.getValues());
@@ -354,7 +351,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     }
   }, [form, formatCvForAI, toast]);
 
-    const onSubmit = useCallback(async (values: CvFormData) => { // Wrapped in useCallback
+    const onSubmit = useCallback(async (values: CvFormData) => {
         if (!currentUser) {
             toast({ title: 'خطأ', description: 'يجب تسجيل الدخول لحفظ السيرة الذاتية.', variant: 'destructive' });
             return;
@@ -362,9 +359,9 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
         setIsSaving(true);
          console.info("[onSubmit] Form values being saved:", values);
         try {
-            const resumeDataToSave = {
+            const resumeDataToSave: Partial<FirestoreResumeData> = { // Use Partial to allow resumeId to be added later
                 userId: currentUser.uid,
-                resumeId: values.resumeId || '',
+                // resumeId: values.resumeId || '', // resumeId will be set if new or kept if existing
                 title: values.title || 'مسودة السيرة الذاتية',
                 personalInfo: {
                     fullName: values.fullName || null,
@@ -390,34 +387,37 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                 skills: (values.skills || []).map(skill => ({
                     name: skill.name || null,
                 })).filter(skill => skill.name),
-                languages: [],
+                // Ensure all fields from FirestoreResumeData are present or explicitly null/undefined
+                languages: [], // Example, ensure these are handled if they can come from `values`
                 hobbies: [],
                 customSections: [],
+                yearsExperience: values.yearsExperience ?? null,
+                jobDescriptionForAI: values.jobDescriptionForAI ?? null,
                 updatedAt: serverTimestamp(),
+                // parsingDone, storagePath, originalFileName, createdAt are handled based on new/existing
             };
 
             let docRef;
             if (values.resumeId) {
                 docRef = doc(db, 'users', currentUser.uid, 'resumes', values.resumeId);
-                 await updateDoc(docRef, resumeDataToSave);
+                await updateDoc(docRef, resumeDataToSave as FirestoreResumeData); // Cast to full type for update
                 toast({ title: 'تم التحديث', description: 'تم تحديث سيرتك الذاتية بنجاح.' });
                 console.info('[onSubmit] CV Updated:', values.resumeId);
             } else {
                 const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
-                docRef = doc(resumesCollectionRef);
-                 const newResumeId = docRef.id;
-                 (resumeDataToSave as any).resumeId = newResumeId; // Type assertion
+                docRef = doc(resumesCollectionRef); // Auto-generate ID for new resume
+                const newResumeId = docRef.id;
 
-                const fullDataToSave = {
-                    ...resumeDataToSave,
-                    parsingDone: false,
+                const fullDataToSave: FirestoreResumeData = {
+                    ...(resumeDataToSave as Omit<FirestoreResumeData, 'resumeId' | 'createdAt' | 'parsingDone' | 'storagePath' | 'originalFileName'>), // Cast carefully
+                    resumeId: newResumeId,
+                    parsingDone: false, // New manual entry, no PDF parsing
                     storagePath: null,
                     originalFileName: null,
                     createdAt: serverTimestamp(),
                 };
-
-                 await setDoc(docRef, fullDataToSave);
-                form.setValue('resumeId', newResumeId);
+                await setDoc(docRef, fullDataToSave);
+                form.setValue('resumeId', newResumeId); // Update form state with the new ID
                 toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية الجديدة بنجاح.' });
                 console.info('[onSubmit] CV Saved with new ID:', newResumeId);
             }
@@ -432,7 +432,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
         } finally {
             setIsSaving(false);
         }
-    }, [currentUser, toast, form]); // Added form to dependencies
+    }, [currentUser, toast, form]);
 
   if (isLoadingCv) {
      return (
@@ -659,7 +659,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({})); }}
+                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({jobTitle: '', company: '', startDate: ''})); }}
                                         className="z-10"
                                         aria-label="إضافة خبرة"
                                     >
@@ -680,7 +680,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                     <FormField
                                        control={form.control}
                                        name={`experience.${index}.jobTitle`}
-                                       render={({ field: formField }) => ( // Renamed field to formField
+                                       render={({ field: formField }) => ( 
                                          <FormItem>
                                            <FormLabel>المسمى الوظيفي</FormLabel>
                                            <FormControl>
