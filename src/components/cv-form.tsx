@@ -1,3 +1,4 @@
+
 'use client';
 
 import * as React from 'react';
@@ -80,8 +81,22 @@ interface CvFormProps {
 
 // --- Normalization Function ---
 export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User | null): CvFormData => {
-    // Start with Zod's default values by parsing an empty object
-    const defaults = cvSchema.parse({});
+    // Start with manual default values matching the schema structure
+    const defaults: CvFormData = {
+        resumeId: undefined,
+        title: 'مسودة السيرة الذاتية',
+        fullName: '',
+        jobTitle: '',
+        email: '',
+        phone: '',
+        address: null,
+        summary: '',
+        experience: [],
+        education: [],
+        skills: [],
+        yearsExperience: null,
+        jobDescriptionForAI: null,
+    };
 
     // Override defaults with current user info if available
     if (currentUser) {
@@ -708,7 +723,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendExperience({}); }} // Append default empty experience
+                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({})); }} // Use schema default
                                         className="z-10"
                                         aria-label="إضافة خبرة"
                                     >
@@ -833,7 +848,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendEducation({}); }} // Append default empty education
+                                        onClick={(e) => { e.stopPropagation(); appendEducation(educationSchema.parse({})); }} // Use schema default
                                         className="z-10"
                                         aria-label="إضافة تعليم"
                                     >
@@ -943,7 +958,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendSkill({}); }} // Append default empty skill
+                                        onClick={(e) => { e.stopPropagation(); appendSkill(skillSchema.parse({})); }} // Use schema default
                                         className="z-10"
                                         aria-label="إضافة مهارة"
                                     >
