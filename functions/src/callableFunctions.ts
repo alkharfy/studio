@@ -11,8 +11,8 @@ if (admin.apps.length === 0) {
 }
 
 // --- Configuration (callable functions also need config) ---
-const vertexModelName = process.env.CV_VERTEXMODEL || functions.config().cv?.vertex_model;
-const gcpProject = process.env.GCLOUD_PROJECT || functions.config().cv?.project_id;
+const vertexModelName = process.env.CV_VERTEX_MODEL || functions.config().cv?.vertex_model; // Consistent config key
+const gcpProject = process.env.GCLOUD_PROJECT || functions.config().cv?.project_id; // Consistent config key
 const vertexAiRegion = process.env.VERTEX_AI_REGION || 'us-central1';
 
 // --- Validation ---
