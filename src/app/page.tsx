@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as React from 'react';
@@ -17,14 +16,17 @@ import { CvForm, normalizeResumeData, cvSchema, type CvFormData } from '@/compon
 import { CvPreview } from '@/components/cv-preview';
 import { useToast } from '@/hooks/use-toast';
 import { Form } from '@/components/ui/form'; // Import the Form component
+import { Progress } from '@/components/ui/progress'; // Import Progress component
 
 // Main page component managing layout and data fetching
 function CvBuilderPageContent() {
   const [isLoadingCv, setIsLoadingCv] = useState(true); // State for loading initial CV
   const [isProcessingPdf, setIsProcessingPdf] = useState(false); // State to track if PDF is currently being processed
+  const [processingProgress, setProcessingProgress] = useState(0); // Progress for the fake timer
   const { toast } = useToast();
   const { signOut, currentUser } = useAuth();
   const processedResumeIdRef = useRef<string | null>(null); // Ref to track shown toast
+  const processingTimerRef = useRef<NodeJS.Timeout | null>(null); // Ref for the timer interval
 
   // Initialize the form using react-hook-form
   const form = useForm<CvFormData>({
@@ -52,7 +54,8 @@ function CvBuilderPageContent() {
 
         try {
             // Validate the normalized data before resetting the form
-            // cvSchema.parse(normalizedData); // Validate before reset
+            // We removed the strict validation here to allow partial updates from listeners
+            // form validation will still happen on user interaction/submit
             form.reset(normalizedData, { keepDefaultValues: false }); // Update the entire form state
             console.log("[updateFormWithData] Form reset successful.");
         } catch (error) {
@@ -70,14 +73,56 @@ function CvBuilderPageContent() {
                 });
              }
             setIsProcessingPdf(false); // Ensure processing state is reset on error
+             if (processingTimerRef.current) clearInterval(processingTimerRef.current); // Clear timer on error
+             setProcessingProgress(0); // Reset progress
         }
     }, [form, currentUser, toast]);
+
+    // Function to start the fake processing timer
+    const startProcessingTimer = useCallback(() => {
+        setIsProcessingPdf(true);
+        setProcessingProgress(0); // Reset progress
+
+        if (processingTimerRef.current) {
+            clearInterval(processingTimerRef.current); // Clear existing timer
+        }
+
+        // Estimate: 30 seconds total (adjust as needed based on function timeout/average time)
+        const totalDuration = 30000; // 30 seconds in ms
+        const intervalTime = 100; // Update every 100ms
+        const steps = totalDuration / intervalTime;
+        const increment = 100 / steps;
+
+        processingTimerRef.current = setInterval(() => {
+            setProcessingProgress((prevProgress) => {
+                const newProgress = prevProgress + increment;
+                if (newProgress >= 100) {
+                    clearInterval(processingTimerRef.current!);
+                    processingTimerRef.current = null;
+                    // Don't automatically set isProcessingPdf to false here, wait for Firestore update
+                    return 100;
+                }
+                return newProgress;
+            });
+        }, intervalTime);
+    }, []);
+
+    // Function to stop the processing timer
+    const stopProcessingTimer = useCallback(() => {
+        if (processingTimerRef.current) {
+            clearInterval(processingTimerRef.current);
+            processingTimerRef.current = null;
+        }
+        setIsProcessingPdf(false);
+        setProcessingProgress(0); // Reset progress fully
+    }, []);
+
 
     // Function to load the most recent CV once
     const loadInitialCv = useCallback(async (userId: string) => {
         console.log("[loadInitialCv] Loading initial CV for user:", userId);
         setIsLoadingCv(true);
-        setIsProcessingPdf(false); // Reset processing state on initial load
+        stopProcessingTimer(); // Stop any previous timers
         processedResumeIdRef.current = null; // Reset processed ID ref on initial load
         let loadedCvData: FirestoreResumeData | null = null;
         try {
@@ -92,9 +137,12 @@ function CvBuilderPageContent() {
                  // Update form with initial data
                  updateFormWithData(loadedCvData);
                  // Set initial processing state based on loaded data
-                 if (!loadedCvData.parsingDone && !loadedCvData.parsingError) {
-                     setIsProcessingPdf(true); // Still processing if flags aren't set
-                     console.log("[loadInitialCv] Initial CV is still being processed.");
+                 if (!loadedCvData.parsingDone && !loadedCvData.parsingError && loadedCvData.storagePath) {
+                     // Don't start timer here, wait for listener to confirm processing state
+                     // setIsProcessingPdf(true); // Still processing if flags aren't set and storagePath exists
+                     console.log("[loadInitialCv] Initial CV might still be processing, listener will confirm.");
+                 } else {
+                    stopProcessingTimer(); // Ensure it's stopped otherwise
                  }
                  // Pre-populate the ref if the loaded CV was already processed successfully
                  if (loadedCvData.parsingDone && !loadedCvData.parsingError) {
@@ -105,6 +153,7 @@ function CvBuilderPageContent() {
                 console.log("[loadInitialCv] No existing CV found, using defaults.");
                 // Reset form with defaults if no CV exists
                 updateFormWithData(null);
+                 stopProcessingTimer(); // Ensure processing state is off
             }
         } catch (error) {
             console.error('[loadInitialCv] Error loading initial CV:', error);
@@ -114,11 +163,12 @@ function CvBuilderPageContent() {
                 variant: 'destructive',
             });
              updateFormWithData(null); // Reset form on error
+              stopProcessingTimer(); // Ensure processing state is off
         } finally {
             setIsLoadingCv(false);
              console.log("[loadInitialCv] Finished loading initial CV.");
         }
-    }, [updateFormWithData, toast]); // Dependencies for initial load
+    }, [updateFormWithData, toast, stopProcessingTimer]); // Dependencies for initial load
 
 
    // Effect to load initial CV data only once when currentUser is available
@@ -130,7 +180,7 @@ function CvBuilderPageContent() {
              console.log("[Effect] User logged out, resetting form.");
              updateFormWithData(null);
              setIsLoadingCv(false); // Stop loading if no user
-             setIsProcessingPdf(false); // Reset processing state
+             stopProcessingTimer(); // Reset processing state
              processedResumeIdRef.current = null; // Reset ref
         }
        // We only want this effect to run when the user ID becomes available *initially*
@@ -159,51 +209,52 @@ function CvBuilderPageContent() {
             if (!querySnapshot.empty) {
                 const cvDoc = querySnapshot.docs[0];
                 const updatedCvData = { resumeId: cvDoc.id, ...cvDoc.data() } as FirestoreResumeData;
-                const currentResumeId = form.getValues('resumeId'); // Get current form resume ID
+                const currentResumeIdInForm = form.getValues('resumeId'); // Get current form resume ID
 
-                 console.log("[Listener Effect] Received update for ID:", updatedCvData.resumeId, " | Current form ID:", currentResumeId);
+                 console.log("[Listener Effect] Received update for ID:", updatedCvData.resumeId, " | Current form ID:", currentResumeIdInForm);
                  console.log("[Listener Effect] Update data:", updatedCvData);
 
-                 // --- IMPORTANT: Only update form if the update is for the *current* resume
-                 // OR if the form doesn't have a resume ID yet (initial load case)
-                 // OR if the update represents a *newer* resume than the one in the form
-                 let shouldUpdateForm = false;
-                 if (!currentResumeId || updatedCvData.resumeId === currentResumeId) {
-                     shouldUpdateForm = true;
-                 } else {
-                     // Check if the incoming update is newer than the current form's resume
-                     // This assumes resumeId is a sortable timestamp or similar. Using updatedAt might be safer.
-                     // Let's simplify: We generally only care about the *latest* resume. If the listener gets
-                     // an update for a *different* ID, it's likely the *new* latest one. Let's update.
-                     console.log("[Listener Effect] Received update for a different (likely newer) resume ID. Updating form.");
-                     shouldUpdateForm = true;
-                 }
+                let shouldUpdateForm = false;
+                // If the form has no ID yet, or the update is for the current ID, or it's a new resume ID
+                if (!currentResumeIdInForm || updatedCvData.resumeId === currentResumeIdInForm || !updatedCvData.resumeId ) {
+                    shouldUpdateForm = true;
+                     console.log("[Listener Effect] Decided to update form.");
+                } else if (updatedCvData.resumeId !== currentResumeIdInForm) {
+                    // If the update is for a *different* resume ID than the one currently in the form,
+                    // it implies a new upload/parse has completed or a different resume was saved.
+                    // We *should* update the form to reflect the latest resume.
+                    console.log("[Listener Effect] Received update for a different (likely newer) resume ID. Updating form.");
+                    shouldUpdateForm = true;
+                    processedResumeIdRef.current = null; // Reset toast ref as we are loading a new resume
+                } else {
+                    console.log("[Listener Effect] Skipping form update (unclear condition).");
+                }
 
 
                 if (shouldUpdateForm) {
                     // Update form state with the latest data first
                     updateFormWithData(updatedCvData);
-                } else {
-                     console.log("[Listener Effect] Skipping form update as incoming data is for an older/different resume.");
                 }
 
+                 // --- State Management based on updatedCvData ---
+                 const isNewlyProcessed = processedResumeIdRef.current !== updatedCvData.resumeId;
 
                 // Check if parsing finished successfully for the specific resume ID being updated
-                if (updatedCvData.parsingDone && !updatedCvData.parsingError && processedResumeIdRef.current !== updatedCvData.resumeId) {
+                 if (updatedCvData.parsingDone && !updatedCvData.parsingError && isNewlyProcessed) {
                     console.log("[Listener Effect] Detected completed parsing for new resume ID:", updatedCvData.resumeId);
-                    setIsProcessingPdf(false); // Processing finished
-                    toast({
+                    stopProcessingTimer(); // Stop timer on success
+                     toast({
                          title: "✅ تم استخراج البيانات",
                          description: "تم تحديث النموذج بالبيانات المستخرجة من ملف PDF. يمكنك الآن المراجعة والتعديل.",
                          variant: "default",
                          duration: 7000, // Show longer
                      });
                     processedResumeIdRef.current = updatedCvData.resumeId; // Mark this ID as processed
-                }
-                // Check if parsing resulted in an error for the specific resume ID being updated
-                else if (updatedCvData.parsingError && processedResumeIdRef.current !== updatedCvData.resumeId) {
+                 }
+                 // Check if parsing resulted in an error for the specific resume ID being updated
+                  else if (updatedCvData.parsingError && isNewlyProcessed) {
                      console.log("[Listener Effect] Detected parsing error for new resume ID:", updatedCvData.resumeId);
-                     setIsProcessingPdf(false); // Processing finished (with error)
+                     stopProcessingTimer(); // Stop timer on error
                      toast({
                          title: "❌ تعذّر استخراج البيانات تلقائيًا",
                          description: `لم نتمكن من استخراج البيانات من هذا الملف (${updatedCvData.parsingError}). الرجاء ملء النموذج يدويًا.`,
@@ -211,31 +262,33 @@ function CvBuilderPageContent() {
                          duration: 7000,
                      });
                      processedResumeIdRef.current = updatedCvData.resumeId; // Mark this ID as processed (even with error)
-                }
-                // Check if the document is still being processed (flags not set) after initial load is done
-                else if (!isLoadingCv && !updatedCvData.parsingDone && !updatedCvData.parsingError) {
+                 }
+                 // Check if the document is still being processed (flags not set) after initial load is done
+                 // Added check for storagePath to ensure it's an uploaded file being processed
+                 else if (!isLoadingCv && !updatedCvData.parsingDone && !updatedCvData.parsingError && updatedCvData.storagePath) {
                     console.log("[Listener Effect] Inferring PDF processing state for resume ID:", updatedCvData.resumeId);
-                     // Only set processing state if it's for the current/latest resume
-                     if (shouldUpdateForm) {
-                         setIsProcessingPdf(true); // Show processing indicator
+                     // Only start processing timer if it's for the current/latest resume AND it's not already running
+                     if (shouldUpdateForm && !isProcessingPdf) {
+                         startProcessingTimer(); // Start the fake timer
                          // Reset toast ref if a new upload starts processing for the *current* resume
-                         if (processedResumeIdRef.current !== updatedCvData.resumeId) {
+                         if (isNewlyProcessed) {
                              processedResumeIdRef.current = null;
                          }
                      }
-                }
-                // Handle regular updates or already processed states for the current resume
-                else if (shouldUpdateForm) {
-                    console.log("[Listener Effect] Regular update or already processed state for resume ID:", updatedCvData.resumeId);
-                    setIsProcessingPdf(false); // Ensure processing indicator is off
-                }
+                 }
+                 // Handle regular updates or already processed states for the current resume
+                 else if (shouldUpdateForm && !isProcessingPdf) { // Make sure timer stops if update is not 'processing'
+                     console.log("[Listener Effect] Regular update or already processed state for resume ID:", updatedCvData.resumeId);
+                     stopProcessingTimer(); // Ensure processing indicator and timer are off
+                 }
+
 
             } else {
                 // Handle case where the last resume might have been deleted or no resumes exist yet
                 console.log("[Listener Effect] No resumes found for user.");
                 // Reset form to defaults if no resumes exist
                 updateFormWithData(null);
-                 setIsProcessingPdf(false); // Ensure processing indicator is off
+                 stopProcessingTimer(); // Ensure processing indicator is off
                  processedResumeIdRef.current = null; // Reset ref
             }
         }, (error) => {
@@ -245,20 +298,32 @@ function CvBuilderPageContent() {
                 description: 'حدث خطأ أثناء الاستماع لتحديثات السيرة الذاتية.',
                 variant: 'destructive',
             });
-             setIsProcessingPdf(false); // Ensure processing indicator is off on error
+             stopProcessingTimer(); // Ensure processing indicator is off on error
         });
 
         // Cleanup function to unsubscribe the listener when the component unmounts or user changes
         return () => {
             console.log("[Listener Effect] Unsubscribing Firestore listener.");
             unsubscribe();
+            if (processingTimerRef.current) { // Clear timer on unmount
+                clearInterval(processingTimerRef.current);
+                processingTimerRef.current = null;
+            }
         };
     // Re-run listener ONLY if user changes OR initial loading finishes. updateFormWithData is stable.
-    }, [currentUser?.uid, toast, updateFormWithData, isLoadingCv, form]); // Added form dependency
+    }, [currentUser?.uid, toast, updateFormWithData, isLoadingCv, form, startProcessingTimer, stopProcessingTimer, isProcessingPdf]); // Added form and timer functions dependency
 
 
    // Get current form data for the preview component
    const currentFormData = form.watch();
+
+   // Determine the message based on loading/processing state
+    let statusMessage = '';
+    if (isLoadingCv) {
+        statusMessage = "جاري تحميل البيانات...";
+    } else if (isProcessingPdf) {
+        statusMessage = "جاري استخراج البيانات...";
+    }
 
   return (
      // Main container with flex layout
@@ -267,13 +332,18 @@ function CvBuilderPageContent() {
         <header className="flex h-[60px] items-center justify-between border-b bg-background px-6 py-2 shrink-0">
             <div className="flex items-center gap-4">
                 <h1 className="text-xl font-semibold text-primary">صانع السيرة الذاتية العربي</h1>
-                {/* You can add a logo here if needed */}
-                 {(isLoadingCv || isProcessingPdf) && (
+                {/* Status Indicator */}
+                {(isLoadingCv || isProcessingPdf) && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>{isLoadingCv ? 'جاري تحميل البيانات...' : 'جاري استخراج البيانات من الملف...'}</span>
+                        <span>{statusMessage}</span>
+                        {isProcessingPdf && (
+                            <div className="w-24"> {/* Fixed width for progress bar */}
+                                <Progress value={processingProgress} className="h-2" />
+                            </div>
+                        )}
                     </div>
-                 )}
+                )}
             </div>
             {currentUser && (
                 <div className="flex items-center gap-2">
@@ -323,5 +393,3 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
-
-    
