@@ -1,62 +1,74 @@
 // functions/src/index.ts
 
 import * as logger from "firebase-functions/logger";
-import type { CloudEvent } from "firebase-functions/v2";
+import type { CloudEvent, CallableRequest } from "firebase-functions/v2";
 import { onObjectFinalized, type StorageObjectData } from "firebase-functions/v2/storage";
-import { initializeApp, getApps as getAdminApps, type App as AdminApp } from "firebase-admin/app";
-import { getFirestore, FieldValue, setDoc, doc, serverTimestamp } from "firebase-admin/firestore";
+import { initializeApp, getApps as getAdminApps } from "firebase-admin/app";
+import { getFirestore, serverTimestamp, setDoc, doc } from "firebase-admin/firestore";
 import { getStorage as getAdminStorage } from "firebase-admin/storage";
 import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
 import { VertexAI } from "@google-cloud/vertexai";
 import * as functions from "firebase-functions";
-import * as fs from "node:fs"; // Import fs for reading file
+import * as fs from "node:fs";
+import type { Resume as FirestoreResumeData } from "./dbTypes"; // Import the dbTypes
 
-
-// Ensure Firebase Admin SDK is initialized only once
+// Initialize Firebase Admin SDK
 if (!getAdminApps().length) {
   initializeApp();
 }
-const db = getFirestore(); // Initialize Firestore globally after app init
 
-const BUCKET = process.env.GCLOUD_PROJECT + ".appspot.com";
-const DOC_AI_REGION = "us"; // Or your specific region
+// Globally initialized services
+const db = getFirestore();
+const adminStorage = getAdminStorage();
 
-const processorPath = functions.config().cv.doc_processor_path;
-const vertexModelPath = functions.config().cv.vertex_model;
+// Configuration for Document AI and Vertex AI
+// Prioritize environment variables, then fallback to functions.config()
+// Ensure your Cloud Functions environment variables are set for production (e.g., CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL)
+// functions.config() is more for Firebase CLI local testing or older v1 function patterns.
+const docProcessorPathConfig = process.env.CV_DOC_PROCESSOR_PATH || functions.config().cv?.doc_processor_path;
+const vertexModelConfig = process.env.CV_VERTEX_MODEL || functions.config().cv?.vertex_model;
+const gcpProjectId = process.env.GCLOUD_PROJECT; // Automatically available in Cloud Functions
 
+let docaiClient: DocumentProcessorServiceClient | undefined;
+let generativeModel: ReturnType<VertexAI["getGenerativeModel"]> | undefined;
 
-const docaiClient = new DocumentProcessorServiceClient();
-const vertexAI = new VertexAI({ project: process.env.GCLOUD_PROJECT, location: "us-central1" }); // Assuming us-central1 for Vertex
-const generativeModel = vertexAI.getGenerativeModel({ model: vertexModelPath });
-
+if (docProcessorPathConfig && vertexModelConfig && gcpProjectId) {
+  docaiClient = new DocumentProcessorServiceClient();
+  const vertexAI = new VertexAI({ project: gcpProjectId, location: "us-central1" });
+  generativeModel = vertexAI.getGenerativeModel({ model: vertexModelConfig });
+} else {
+  logger.error("Critical: Document AI processor path or Vertex AI model or GCP Project ID is not configured. Check environment variables (CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL) or Firebase functions.config().");
+}
 
 export const parseResumePdf = onObjectFinalized(
   {
-    region: "us-central1", // Keep consistent with where function is deployed
-    bucket: BUCKET,
-    eventFilters: { ["object.name"]: "resumes_uploads/**" }, // Corrected key syntax
+    region: "us-central1",
+    bucket: `${gcpProjectId}.appspot.com`, // Use the project ID to construct bucket name
+    eventFilters: { ["object.name"]: "resumes_uploads/**" },
     memory: "1GiB",
     timeoutSeconds: 540,
-    cpu: 1, // Added CPU from previous requests
+    cpu: 1,
   },
   async (event: CloudEvent<StorageObjectData>) => {
-    const { bucket, name, metageneration } = event.data;
+    const { bucket, name } = event.data;
 
     if (!name) {
       logger.log("Object name is undefined, exiting.");
       return;
     }
+
     // Check for metageneration to avoid infinite loops from updates by the function itself
-    if (metageneration && parseInt(metageneration, 10) > 1) {
-        logger.log("This is a metadata update event, not a new upload. Skipping.");
-        return;
+    // This check can sometimes be tricky with how Firebase Storage/Functions handle events.
+    // If `metageneration` is not consistently reliable, consider other idempotency strategies.
+    if (event.data.metageneration && parseInt(event.data.metageneration as string, 10) > 1) {
+      logger.log("This is a metadata update event, not a new upload. Skipping.", { name, metageneration: event.data.metageneration });
+      return;
     }
 
     logger.log("🔔 TRIGGERED on", name);
 
-
     if (!name.startsWith("resumes_uploads/")) {
-      logger.log("File is not in resumes_uploads/, skipping.");
+      logger.log("File is not in resumes_uploads/, skipping.", { name });
       return;
     }
 
@@ -65,51 +77,39 @@ export const parseResumePdf = onObjectFinalized(
       logger.error("Could not extract UID from path:", name);
       return;
     }
+
     const fileName = name.split("/").pop()!;
     const tempFilePath = `/tmp/${fileName}`;
 
-    if (!processorPath) {
-      logger.error("Document AI processor path is not configured. Set functions.config().cv.doc_processor_path");
-      // Optionally, write parsingError to Firestore
+    if (!docaiClient || !generativeModel || !docProcessorPathConfig) {
+      logger.error("Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf.", { name });
       const errorResumeId = Date.now().toString();
       await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
-          parsingError: "config_error_docai_path",
-          storagePath: name,
-          originalFileName: fileName,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+        parsingError: "config_error_services_not_initialized",
+        storagePath: name,
+        originalFileName: fileName,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
       return;
     }
-    if (!vertexModelPath) {
-        logger.error("Vertex AI model path is not configured. Set functions.config().cv.vertex_model");
-        const errorResumeId = Date.now().toString();
-        await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: "config_error_vertex_model",
-            storagePath: name,
-            originalFileName: fileName,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-        });
-        return;
-    }
-
 
     try {
       // 1. Download file
-      await getAdminStorage().bucket(bucket).file(name).download({ destination: tempFilePath });
-      logger.log("📄 File downloaded to", tempFilePath);
+      await adminStorage.bucket(bucket).file(name).download({ destination: tempFilePath });
+      logger.log("📄 File downloaded to", tempFilePath, { name });
 
       // 2. OCR via Document AI
       const fileContent = fs.readFileSync(tempFilePath);
       const [docAiResult] = await docaiClient.processDocument({
-        name: processorPath,
+        name: docProcessorPathConfig, // Use the validated config path
         rawDocument: { content: fileContent, mimeType: "application/pdf" },
       });
       const rawText = docAiResult.document?.text ?? "";
-      logger.log("📝 OCR extracted text length:", rawText.length);
+      logger.log("📝 OCR extracted text length:", rawText.length, { name });
+
       if (!rawText.trim()) {
-        logger.warn("OCR result is empty. Writing parsingError to Firestore.");
+        logger.warn("OCR result is empty. Writing parsingError to Firestore.", { name });
         const errorResumeId = Date.now().toString();
         await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ocr_empty_result",
@@ -118,10 +118,10 @@ export const parseResumePdf = onObjectFinalized(
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
         });
-        return; // Stop further processing
+        return;
       }
 
-      const textSnippet = rawText.slice(0, 15000); // Limit text for Vertex AI
+      const textSnippet = rawText.slice(0, 15000);
 
       // 3. Extract structured JSON via Vertex AI
       const prompt = `
@@ -135,11 +135,11 @@ export const parseResumePdf = onObjectFinalized(
             phone: string, address: string, jobTitle: string
           },
           summary: string, // Changed from objective
-          education: { degree: string, institution: string, graduationYear: string, details?: string }[], // Changed institute to institution, year to graduationYear, added details
-          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[], // Changed title to jobTitle, start to startDate, end to endDate
-          skills: { name: string }[], // Changed to array of objects
+          education: { degree: string, institution: string, graduationYear: string, details?: string }[],
+          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[],
+          skills: { name: string }[],
           languages: { name: string, level?: string }[],
-          hobbies?: string[] // Made optional
+          hobbies?: string[]
         }
 
         –––––––––––––––––––––––––––––––––
@@ -179,10 +179,6 @@ export const parseResumePdf = onObjectFinalized(
       `;
 
       const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
-      // Assuming the response structure is { response: { candidates: [ { content: { parts: [ { text: 'json_string' } ] } } ] } }
-      // Adjust based on actual Vertex AI SDK response structure.
-      // The previous code used `const [{ text: jsonString }] = await ...` which might be specific to an older SDK version or model.
-      // Let's try to access it more robustly.
       let jsonString = "";
       if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
           const firstCandidate = aiResponse.response.candidates[0];
@@ -190,11 +186,10 @@ export const parseResumePdf = onObjectFinalized(
               jsonString = firstCandidate.content.parts[0].text || "";
           }
       }
-
-      logger.log("🎯 Vertex AI raw JSON string:", jsonString);
+      logger.log("🎯 Vertex AI raw JSON string:", jsonString, { name });
 
       if (!jsonString.trim()) {
-        logger.warn("Vertex AI returned empty string. Writing parsingError to Firestore.");
+        logger.warn("Vertex AI returned empty string. Writing parsingError to Firestore.", { name });
          const errorResumeId = Date.now().toString();
          await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
              parsingError: "vertex_empty_response",
@@ -206,33 +201,30 @@ export const parseResumePdf = onObjectFinalized(
         return;
       }
 
-
       let extractedData;
       try {
         extractedData = JSON.parse(jsonString);
-      } catch (e: any) { // Explicitly type 'e'
-        logger.error("🚨 Failed to parse JSON from Vertex AI:", e.message, "Raw string:", jsonString);
-        const errorResumeId = Date.now().toString(); // Use a different ID for error doc
+      } catch (e: any) {
+        logger.error("🚨 Failed to parse JSON from Vertex AI:", e.message, "Raw string:", jsonString, { name });
+        const errorResumeId = Date.now().toString();
         await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
           parsingError: `vertex_json_parse_error: ${e.message}`,
-          rawAiOutput: jsonString, // Store the problematic string for debugging
+          rawAiOutput: jsonString,
           storagePath: name,
           originalFileName: fileName,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-        return; // Stop processing
+        return;
       }
+      logger.log("📊 Parsed JSON from Vertex AI:", extractedData, { name });
 
-      logger.log("📊 Parsed JSON from Vertex AI:", extractedData);
-
-      // Validate crucial fields (e.g., fullName)
       if (!extractedData.personalInfo?.fullName) {
-        logger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.");
+        logger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.", { name, extractedData });
         const errorResumeId = Date.now().toString();
         await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ai_output_missing_fullname",
-            extractedData: extractedData, // Store what was extracted
+            extractedData: extractedData,
             storagePath: name,
             originalFileName: fileName,
             createdAt: serverTimestamp(),
@@ -242,14 +234,13 @@ export const parseResumePdf = onObjectFinalized(
       }
 
       // 4. Write to Firestore
-      const resumeId = Date.now().toString(); // Use Firestore server timestamp for ID generation if preferred
+      const resumeId = Date.now().toString();
       const resumeDocRef = doc(db, "users", uid, "resumes", resumeId);
 
-      // Construct the final object to save, matching the FirestoreResumeData interface
-      const finalResumeData = {
-        resumeId: resumeId, // Add the ID to the document itself
-        userId: uid, // Add userId
-        title: extractedData.title || fileName, // Fallback to filename if title is missing
+      const finalResumeData: FirestoreResumeData = {
+        resumeId: resumeId,
+        userId: uid,
+        title: extractedData.title || fileName,
         personalInfo: {
             fullName: extractedData.personalInfo?.fullName || null,
             email: extractedData.personalInfo?.email || null,
@@ -257,42 +248,39 @@ export const parseResumePdf = onObjectFinalized(
             address: extractedData.personalInfo?.address || null,
             jobTitle: extractedData.personalInfo?.jobTitle || null,
         },
-        summary: extractedData.summary || extractedData.objective || null, // Use summary, fallback to objective
-        education: (extractedData.education || []).map((edu: any) => ({ // Ensure it's an array
+        summary: extractedData.summary || extractedData.objective || null,
+        education: (extractedData.education || []).map((edu: any) => ({
             degree: edu.degree || null,
-            institution: edu.institution || edu.institute || null, // Handle both institution/institute
-            graduationYear: edu.graduationYear || edu.year || null, // Handle both graduationYear/year
+            institution: edu.institution || edu.institute || null,
+            graduationYear: edu.graduationYear || edu.year || null,
             details: edu.details || null,
         })),
         experience: (extractedData.experience || []).map((exp: any) => ({
-            jobTitle: exp.jobTitle || exp.title || null, // Handle both jobTitle/title
+            jobTitle: exp.jobTitle || exp.title || null,
             company: exp.company || null,
-            startDate: exp.startDate || exp.start || null, // Handle both startDate/start
+            startDate: exp.startDate || exp.start || null,
             endDate: exp.endDate || exp.end || null,
             description: exp.description || null,
         })),
-        skills: (extractedData.skills || []).map((skill: any) => ({ // Map skills to {name: string}
+        skills: (extractedData.skills || []).map((skill: any) => ({
             name: typeof skill === 'string' ? skill : (skill?.name || null)
-        })).filter((s: any) => s.name), // Filter out empty/invalid skills
+        })).filter((s: any) => s.name),
         languages: extractedData.languages || [],
         hobbies: extractedData.hobbies || [],
-        customSections: extractedData.customSections || [], // Assuming customSections might be extracted
-
-        // Metadata
+        customSections: extractedData.customSections || [],
         parsingDone: true,
-        parsingError: null, // Explicitly set to null on success
+        parsingError: null,
         storagePath: name,
-        originalFileName: fileName, // Store the original file name
+        originalFileName: fileName,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
-
       await setDoc(resumeDocRef, finalResumeData);
-      logger.log("✅ Successfully wrote resume to users/%s/resumes/%s", uid, resumeId);
+      logger.log("✅ Successfully wrote resume to users/%s/resumes/%s", uid, resumeId, { name });
 
-    } catch (error: any) { // Explicitly type 'error'
-      logger.error("🚨 Unhandled error in parseResumePdf:", error.message, { errorObj: error });
+    } catch (error: any) {
+      logger.error("🚨 Unhandled error in parseResumePdf:", error.message, { name, errorObj: error });
       const errorResumeId = Date.now().toString();
       await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
         parsingError: `unknown_function_error: ${error.message}`,
@@ -302,101 +290,104 @@ export const parseResumePdf = onObjectFinalized(
         updatedAt: serverTimestamp(),
       });
     } finally {
-        // Clean up the temporary file
         if (fs.existsSync(tempFilePath)) {
             try {
                 fs.unlinkSync(tempFilePath);
-                logger.log("🗑️ Temporary file deleted:", tempFilePath);
+                logger.log("🗑️ Temporary file deleted:", tempFilePath, { name });
             } catch (unlinkError: any) {
-                logger.error("🚨 Error deleting temporary file:", unlinkError.message);
+                logger.error("🚨 Error deleting temporary file:", unlinkError.message, { name, unlinkErrorObj: unlinkError });
             }
         }
     }
   }
 );
 
+export const suggestSummary = functions.https.onCall(async (data: { jobTitle?: string; yearsExp?: number; skills?: string[]; lang?: string }, context: CallableRequest<any>) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
+  }
+  if (!generativeModel) {
+    logger.error("Vertex AI service not initialized for suggestSummary. Missing configuration.");
+    throw new functions.https.HttpsError('internal', 'AI service not available. Please try again later.');
+  }
 
-// --- suggestSummary Cloud Function ---
-export const suggestSummary = functions.https.onCall(async (data, context) => {
-    if (!context.auth) {
-        throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
-    }
-    const { jobTitle, yearsExp = 0, skills = [], lang = "ar" } = data;
-    if (!jobTitle || typeof jobTitle !== 'string') {
-        throw new functions.https.HttpsError('invalid-argument', 'The function must be called with a valid "jobTitle" argument.');
-    }
+  const { jobTitle, yearsExp = 0, skills = [], lang = "ar" } = data;
+  if (!jobTitle || typeof jobTitle !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'The function must be called with a valid "jobTitle" argument.');
+  }
 
-    const prompt = `
-      Write a concise, engaging professional summary (~70–90 words, 2–3 sentences) in ${lang}
-      for someone with the job title "${jobTitle}", ${yearsExp} years experience and skills: ${skills.join(", ")}.
-      Emphasise impact and soft skills. Ensure the output is plain text, without any Markdown or JSON formatting.
-    `;
+  const prompt = `
+    Write a concise, engaging professional summary (~70–90 words, 2–3 sentences) in ${lang}
+    for someone with the job title "${jobTitle}", ${yearsExp} years experience and skills: ${skills.join(", ")}.
+    Emphasise impact and soft skills. Ensure the output is plain text, without any Markdown or JSON formatting.
+  `;
 
-    try {
-        const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
-        let summaryText = "";
-         if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
-             const firstCandidate = aiResponse.response.candidates[0];
-             if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
-                 summaryText = firstCandidate.content.parts[0].text || "";
-             }
+  try {
+    const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    let summaryText = "";
+     if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
+         const firstCandidate = aiResponse.response.candidates[0];
+         if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
+             summaryText = firstCandidate.content.parts[0].text || "";
          }
-        logger.info("💡 suggestSummary AI response:", { jobTitle, summaryText });
-        return { summary: summaryText.trim() };
-    } catch (error: any) {
-        logger.error("🚨 Error in suggestSummary:", error.message, { jobTitle });
-        throw new functions.https.HttpsError('internal', 'Failed to generate summary.', error.message);
-    }
+     }
+    logger.info("💡 suggestSummary AI response:", { jobTitle, summaryText });
+    return { summary: summaryText.trim() };
+  } catch (error: any) {
+    logger.error("🚨 Error in suggestSummary:", error.message, { jobTitle, errorObj: error });
+    throw new functions.https.HttpsError('internal', 'Failed to generate summary.', error.message);
+  }
 });
 
+export const suggestSkills = functions.https.onCall(async (data: { jobTitle?: string; max?: number; lang?: string }, context: CallableRequest<any>) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
+  }
+  if (!generativeModel) {
+    logger.error("Vertex AI service not initialized for suggestSkills. Missing configuration.");
+    throw new functions.https.HttpsError('internal', 'AI service not available. Please try again later.');
+  }
 
-// --- suggestSkills Cloud Function ---
-export const suggestSkills = functions.https.onCall(async (data, context) => {
-    if (!context.auth) {
-        throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
-    }
-    const { jobTitle, max = 8, lang = "ar" } = data;
-    if (!jobTitle || typeof jobTitle !== 'string') {
-        throw new functions.https.HttpsError('invalid-argument', 'The function must be called with a valid "jobTitle" argument.');
-    }
+  const { jobTitle, max = 8, lang = "ar" } = data;
+  if (!jobTitle || typeof jobTitle !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'The function must be called with a valid "jobTitle" argument.');
+  }
 
-    const prompt = `
-      Suggest up to ${max} relevant skills (technical and soft) in ${lang} for a person with the job title "${jobTitle}".
-      Return the skills as a simple JSON array of strings, like ["skill1", "skill2"]. Do not include any other text or explanation.
-      Example for "مهندس برمجيات": ["JavaScript", "React", "Node.js", "حل المشكلات", "التواصل الفعال"]
-    `;
+  const prompt = `
+    Suggest up to ${max} relevant skills (technical and soft) in ${lang} for a person with the job title "${jobTitle}".
+    Return the skills as a simple JSON array of strings, like ["skill1", "skill2"]. Do not include any other text or explanation.
+    Example for "مهندس برمجيات": ["JavaScript", "React", "Node.js", "حل المشكلات", "التواصل الفعال"]
+  `;
 
-    try {
-        const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
-        let skillsJsonString = "";
-        if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
-             const firstCandidate = aiResponse.response.candidates[0];
-             if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
-                 skillsJsonString = firstCandidate.content.parts[0].text || "[]";
-             }
+  try {
+    const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    let skillsJsonString = "";
+    if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
+         const firstCandidate = aiResponse.response.candidates[0];
+         if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
+             skillsJsonString = firstCandidate.content.parts[0].text || "[]";
          }
+     }
 
-        logger.info("💡 suggestSkills AI response:", { jobTitle, skillsJsonString });
-        // Attempt to parse the string, ensure it's an array of strings
-        let suggestedSkills: string[] = [];
-        try {
-            const parsed = JSON.parse(skillsJsonString);
-            if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) {
-                suggestedSkills = parsed;
-            } else {
-                logger.warn("suggestSkills: AI response was not a valid JSON array of strings. Raw:", skillsJsonString);
-            }
-        } catch (parseError: any) {
-            logger.error("🚨 Error parsing skills JSON from AI:", parseError.message, "Raw:", skillsJsonString);
-             // Fallback: try to extract skills if it's a comma-separated list or similar
-             if (typeof skillsJsonString === 'string' && !skillsJsonString.includes('[') && !skillsJsonString.includes('{')) {
-                suggestedSkills = skillsJsonString.split(',').map(s => s.trim()).filter(Boolean);
-             }
+    logger.info("💡 suggestSkills AI response:", { jobTitle, skillsJsonString });
+    let suggestedSkills: string[] = [];
+    try {
+        const parsed = JSON.parse(skillsJsonString);
+        if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) {
+            suggestedSkills = parsed;
+        } else {
+            logger.warn("suggestSkills: AI response was not a valid JSON array of strings. Raw:", skillsJsonString, { jobTitle });
         }
-
-        return { skills: suggestedSkills.slice(0, max) }; // Ensure max limit
-    } catch (error: any) {
-        logger.error("🚨 Error in suggestSkills:", error.message, { jobTitle });
-        throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
+    } catch (parseError: any) {
+        logger.error("🚨 Error parsing skills JSON from AI:", parseError.message, "Raw:", skillsJsonString, { jobTitle, parseErrorObj: parseError });
+         if (typeof skillsJsonString === 'string' && !skillsJsonString.includes('[') && !skillsJsonString.includes('{')) {
+            suggestedSkills = skillsJsonString.split(',').map(s => s.trim()).filter(Boolean);
+         }
     }
+
+    return { skills: suggestedSkills.slice(0, max) };
+  } catch (error: any) {
+    logger.error("🚨 Error in suggestSkills:", error.message, { jobTitle, errorObj: error });
+    throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
+  }
 });

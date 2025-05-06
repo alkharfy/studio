@@ -179,6 +179,7 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
         setIsUploading(false);
         setUploadProgress(0);
         setSelectedFile(null);
+ console.log(error);
         if (fileInputRef.current) fileInputRef.current.value = '';
       },
       async () => {
