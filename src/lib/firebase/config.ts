@@ -1,8 +1,7 @@
-
 // src/lib/firebase/config.ts
-import { initializeApp, getApps, getApp, type FirebaseOptions } from 'firebase/app';
+import { initializeApp, getApps, type FirebaseOptions, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth'; // Added connectAuthEmulator
-import { getFirestore, enableIndexedDbPersistence, connectFirestoreEmulator } from 'firebase/firestore'; // Import persistence and emulator connector
+import { getFirestore, connectFirestoreEmulator, type FirestoreSettings, enableIndexedDbPersistence } from 'firebase/firestore'; // Import persistence and emulator connector
 import { getStorage, connectStorageEmulator } from 'firebase/storage'; // Import Firebase Storage and emulator connector
 // import { getAnalytics } from "firebase/analytics"; // Uncomment if Analytics is needed
 
@@ -85,24 +84,22 @@ if (typeof window !== 'undefined' && !getApps().length) {
                  console.log("Firebase Emulators not enabled (NODE_ENV is not 'development' or NEXT_PUBLIC_USE_EMULATOR is not 'true'). Connecting to production Firebase.");
             }
 
-             // Enable offline persistence (only works in browser environments)
-             // This is asynchronous, but setting it up should happen early.
-            enableIndexedDbPersistence(dbInstance)
-               .then(() => {
-                 console.log("Firestore offline persistence enabled.");
-               })
-               .catch((err) => {
-                 if (err.code == 'failed-precondition') {
-                   // Multiple tabs open, persistence can only be enabled in one tab at a time.
-                   // OR it's already enabled.
-                   console.warn("Firestore persistence failed or already enabled: Multiple tabs open or previously enabled.");
-                 } else if (err.code == 'unimplemented') {
-                   // The current browser does not support all features required to enable persistence.
-                   console.warn("Firestore persistence failed: Browser does not support required features.");
-                 } else {
-                     console.error("Firestore persistence failed:", err);
-                 }
-               });
+
+            // Configure offline persistence (only works in browser environments)
+            if (typeof window !== 'undefined') { // Ensure window object exists for browser environment
+                enableIndexedDbPersistence(dbInstance)
+                    .then(() => console.log("Firestore offline persistence enabled."))
+                    .catch((err) => {
+                        if (err.code === 'failed-precondition') {
+                            console.warn("Firestore offline persistence couldn't be enabled (failed-precondition - likely already active or multiple tabs).");
+                        } else if (err.code === 'unimplemented') {
+                             console.warn("Firestore offline persistence couldn't be enabled (unimplemented - browser doesn't support).");
+                        } else {
+                            console.error("Error enabling Firestore offline persistence:", err);
+                        }
+                    });
+            }
+
 
              // --- End of immediate configuration ---
 
@@ -117,13 +114,27 @@ if (typeof window !== 'undefined' && !getApps().length) {
 
 } else if (typeof window !== 'undefined' && getApps().length) {
   // Get existing app if already initialized (e.g., during hot-reloads)
-  app = getApp();
+  app = getApp(); // Get the already initialized app
   authInstance = getAuth(app);
-  dbInstance = getFirestore(app);
+  dbInstance = getFirestore(app); // Get the existing Firestore instance
   storageInstance = getStorage(app); // Get existing storage instance
+
+  // For existing instances, persistence should have been enabled on first init.
+  // Attempting to enable it again might lead to "failed-precondition" if already enabled.
+  // It's generally safe to call it, as it handles this gracefully.
+  if (typeof window !== 'undefined') {
+      enableIndexedDbPersistence(dbInstance)
+          .then(() => console.log("Firestore offline persistence re-confirmed for existing app instance."))
+          .catch((err) => {
+              if (err.code === 'failed-precondition') {
+                  // This is expected if persistence is already active
+                  console.info("Firestore offline persistence (existing app): already active or multiple tabs.");
+              } else {
+                  console.error("Error re-confirming Firestore offline persistence (existing app):", err);
+              }
+          });
+  }
   // analytics = getAnalytics(app); // Uncomment if needed
-  // Note: Emulator/Persistence settings from the *initial* load persist.
-  // Re-running connectEmulator or enablePersistence here would cause the error.
 } else {
     // Handle server-side or non-browser environment if necessary
     // Assign null or throw an error if Firebase services are needed server-side without proper setup
