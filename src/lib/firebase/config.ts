@@ -1,7 +1,7 @@
 // src/lib/firebase/config.ts
 import { initializeApp, getApps, type FirebaseOptions, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth'; // Added connectAuthEmulator
-import { getFirestore, connectFirestoreEmulator, type FirestoreSettings, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'; // Import persistence and emulator connector
+import { getFirestore, connectFirestoreEmulator, enableIndexedDbPersistence } from 'firebase/firestore'; // Import persistence and emulator connector
 import { getStorage, connectStorageEmulator } from 'firebase/storage'; // Import Firebase Storage and emulator connector
 // import { getAnalytics } from "firebase/analytics"; // Uncomment if Analytics is needed
 
@@ -87,13 +87,8 @@ if (typeof window !== 'undefined' && !getApps().length) {
 
             // Configure offline persistence (only works in browser environments)
             if (typeof window !== 'undefined') { // Ensure window object exists for browser environment
-                const firestoreSettings: FirestoreSettings = {
-                    cache: persistentLocalCache({
-                        tabManager: persistentMultipleTabManager(),
-                    }),
-                };
-                dbInstance.settings(firestoreSettings)
-                    .then(() => console.log("Firestore offline persistence enabled."))
+                enableIndexedDbPersistence(dbInstance, { synchronizeTabs: true})
+                    .then(() => console.log("Firestore offline persistence enabled with tab synchronization."))
                     .catch((err) => {
                         if (err.code === 'failed-precondition') {
                             console.warn("Firestore offline persistence couldn't be enabled (failed-precondition - likely already active or multiple tabs).");
@@ -128,13 +123,8 @@ if (typeof window !== 'undefined' && !getApps().length) {
   // Attempting to enable it again might lead to "failed-precondition" if already enabled.
   // It's generally safe to call it, as it handles this gracefully.
    if (typeof window !== 'undefined') {
-        const firestoreSettings: FirestoreSettings = {
-            cache: persistentLocalCache({
-                tabManager: persistentMultipleTabManager(),
-            }),
-        };
-        dbInstance.settings(firestoreSettings) // Apply settings before .then()
-          .then(() => console.log("Firestore offline persistence re-confirmed for existing app instance."))
+        enableIndexedDbPersistence(dbInstance, { synchronizeTabs: true })
+          .then(() => console.log("Firestore offline persistence re-confirmed for existing app instance with tab synchronization."))
           .catch((err) => {
               if (err.code === 'failed-precondition') {
                   // This is expected if persistence is already active
