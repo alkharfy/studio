@@ -1,7 +1,7 @@
 // src/lib/firebase/config.ts
 import { initializeApp, getApps, type FirebaseOptions, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth'; // Added connectAuthEmulator
-import { getFirestore, connectFirestoreEmulator, type FirestoreSettings, enableIndexedDbPersistence } from 'firebase/firestore'; // Import persistence and emulator connector
+import { getFirestore, connectFirestoreEmulator, type FirestoreSettings, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'; // Import persistence and emulator connector
 import { getStorage, connectStorageEmulator } from 'firebase/storage'; // Import Firebase Storage and emulator connector
 // import { getAnalytics } from "firebase/analytics"; // Uncomment if Analytics is needed
 
@@ -87,7 +87,12 @@ if (typeof window !== 'undefined' && !getApps().length) {
 
             // Configure offline persistence (only works in browser environments)
             if (typeof window !== 'undefined') { // Ensure window object exists for browser environment
-                enableIndexedDbPersistence(dbInstance)
+                const firestoreSettings: FirestoreSettings = {
+                    cache: persistentLocalCache({
+                        tabManager: persistentMultipleTabManager(),
+                    }),
+                };
+                dbInstance.settings(firestoreSettings)
                     .then(() => console.log("Firestore offline persistence enabled."))
                     .catch((err) => {
                         if (err.code === 'failed-precondition') {
@@ -122,8 +127,13 @@ if (typeof window !== 'undefined' && !getApps().length) {
   // For existing instances, persistence should have been enabled on first init.
   // Attempting to enable it again might lead to "failed-precondition" if already enabled.
   // It's generally safe to call it, as it handles this gracefully.
-  if (typeof window !== 'undefined') {
-      enableIndexedDbPersistence(dbInstance)
+   if (typeof window !== 'undefined') {
+        const firestoreSettings: FirestoreSettings = {
+            cache: persistentLocalCache({
+                tabManager: persistentMultipleTabManager(),
+            }),
+        };
+        dbInstance.settings(firestoreSettings) // Apply settings before .then()
           .then(() => console.log("Firestore offline persistence re-confirmed for existing app instance."))
           .catch((err) => {
               if (err.code === 'failed-precondition') {
@@ -150,3 +160,4 @@ export const storage = storageInstance; // Export storage
 export const googleProvider = googleProviderInstance;
 // Export app if needed
 // export { app };
+
