@@ -1,15 +1,16 @@
 // functions/src/index.ts
+import * as fs from 'fs';
 
-import * as logger from "firebase-functions/logger";
-import type { CloudEvent, CallableRequest } from "firebase-functions/v2";
+import type { CloudEvent } from "firebase-functions/v2";
 import { onObjectFinalized, type StorageObjectData } from "firebase-functions/v2/storage";
 import { initializeApp, getApps as getAdminApps } from "firebase-admin/app";
-import { getFirestore, serverTimestamp, setDoc, doc } from "firebase-admin/firestore";
+import { getFirestore, serverTimestamp as firestoreServerTimestamp, setDoc as firestoreSetDoc, doc as firestoreDoc } from "firebase-admin/firestore";
 import { getStorage as getAdminStorage } from "firebase-admin/storage";
 import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
-import { VertexAI } from "@google-cloud/vertexai";
+import { VertexAI, type Content, type Part } from "@google-cloud/vertexai";
 import * as functions from "firebase-functions";
-import * as fs from "node:fs";
+import { HttpsCallableContext, CallableRequest, onCall } from "firebase-functions/v2/https";
+import { logger as functionsLogger } from "firebase-functions/logger";
 import type { Resume as FirestoreResumeData } from "./dbTypes"; // Import the dbTypes
 
 // Initialize Firebase Admin SDK
@@ -22,9 +23,6 @@ const db = getFirestore();
 const adminStorage = getAdminStorage();
 
 // Configuration for Document AI and Vertex AI
-// Prioritize environment variables, then fallback to functions.config()
-// Ensure your Cloud Functions environment variables are set for production (e.g., CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL)
-// functions.config() is more for Firebase CLI local testing or older v1 function patterns.
 const docProcessorPathConfig = process.env.CV_DOC_PROCESSOR_PATH || functions.config().cv?.doc_processor_path;
 const vertexModelConfig = process.env.CV_VERTEX_MODEL || functions.config().cv?.vertex_model;
 const gcpProjectId = process.env.GCLOUD_PROJECT; // Automatically available in Cloud Functions
@@ -33,17 +31,17 @@ let docaiClient: DocumentProcessorServiceClient | undefined;
 let generativeModel: ReturnType<VertexAI["getGenerativeModel"]> | undefined;
 
 if (docProcessorPathConfig && vertexModelConfig && gcpProjectId) {
-  docaiClient = new DocumentProcessorServiceClient();
+  docaiClient = new DocumentProcessorServiceClient({ apiEndpoint: "us-central1-documentai.googleapis.com" });
   const vertexAI = new VertexAI({ project: gcpProjectId, location: "us-central1" });
   generativeModel = vertexAI.getGenerativeModel({ model: vertexModelConfig });
 } else {
-  logger.error("Critical: Document AI processor path or Vertex AI model or GCP Project ID is not configured. Check environment variables (CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL) or Firebase functions.config().");
+  functionsLogger.error("Critical: Document AI processor path or Vertex AI model or GCP Project ID is not configured. Check environment variables (CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL) or Firebase functions.config().");
 }
 
 export const parseResumePdf = onObjectFinalized(
   {
     region: "us-central1",
-    bucket: `${gcpProjectId}.appspot.com`, // Use the project ID to construct bucket name
+    bucket: `${gcpProjectId}.appspot.com`,
     eventFilters: { ["object.name"]: "resumes_uploads/**" },
     memory: "1GiB",
     timeoutSeconds: 540,
@@ -53,77 +51,71 @@ export const parseResumePdf = onObjectFinalized(
     const { bucket, name } = event.data;
 
     if (!name) {
-      logger.log("Object name is undefined, exiting.");
+ functionsLogger.log("Object name is undefined, exiting.");
       return;
     }
 
-    // Check for metageneration to avoid infinite loops from updates by the function itself
-    // This check can sometimes be tricky with how Firebase Storage/Functions handle events.
-    // If `metageneration` is not consistently reliable, consider other idempotency strategies.
     if (event.data.metageneration && parseInt(event.data.metageneration as string, 10) > 1) {
-      logger.log("This is a metadata update event, not a new upload. Skipping.", { name, metageneration: event.data.metageneration });
+      functionsLogger.log("This is a metadata update event, not a new upload. Skipping.", { name, metageneration: event.data.metageneration });
       return;
     }
 
-    logger.log("🔔 TRIGGERED on", name);
+    functionsLogger.log("🔔 TRIGGERED on", name);
 
     if (!name.startsWith("resumes_uploads/")) {
-      logger.log("File is not in resumes_uploads/, skipping.", { name });
+      functionsLogger.log("File is not in resumes_uploads/, skipping.", { name });
       return;
     }
 
     const uid = name.split("/")[1];
     if (!uid) {
-      logger.error("Could not extract UID from path:", name);
+ functionsLogger.error("Could not extract UID from path:", name);
       return;
     }
 
     const fileName = name.split("/").pop()!;
     const tempFilePath = `/tmp/${fileName}`;
 
-    if (!docaiClient || !generativeModel || !docProcessorPathConfig) {
-      logger.error("Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf.", { name });
+ if (!docaiClient || !generativeModel || !docProcessorPathConfig) {
+ functionsLogger.error("Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf.", { name });
       const errorResumeId = Date.now().toString();
-      await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
+      await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
         parsingError: "config_error_services_not_initialized",
         storagePath: name,
         originalFileName: fileName,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt: firestoreServerTimestamp(),
+        updatedAt: firestoreServerTimestamp(),
       });
       return;
     }
 
     try {
-      // 1. Download file
       await adminStorage.bucket(bucket).file(name).download({ destination: tempFilePath });
-      logger.log("📄 File downloaded to", tempFilePath, { name });
+ functionsLogger.log("📄 File downloaded to", tempFilePath, { name });
 
-      // 2. OCR via Document AI
       const fileContent = fs.readFileSync(tempFilePath);
-      const [docAiResult] = await docaiClient.processDocument({
-        name: docProcessorPathConfig, // Use the validated config path
+      const [docAiResult] = await docaiClient!.processDocument({
+        name: docProcessorPathConfig,
         rawDocument: { content: fileContent, mimeType: "application/pdf" },
       });
-      const rawText = docAiResult.document?.text ?? "";
-      logger.log("📝 OCR extracted text length:", rawText.length, { name });
+ const rawText = docAiResult.document?.text || "";
+ functionsLogger.log("📝 OCR extracted text length:", rawText.length, { name });
 
       if (!rawText.trim()) {
-        logger.warn("OCR result is empty. Writing parsingError to Firestore.", { name });
+ functionsLogger.warn("OCR result is empty. Writing parsingError to Firestore.", { name });
         const errorResumeId = Date.now().toString();
-        await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
+        await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ocr_empty_result",
             storagePath: name,
             originalFileName: fileName,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt: firestoreServerTimestamp(),
+            updatedAt: firestoreServerTimestamp(),
         });
         return;
       }
 
       const textSnippet = rawText.slice(0, 15000);
 
-      // 3. Extract structured JSON via Vertex AI
       const prompt = `
         You are an expert Arabic/English résumé parser.
         Return ONLY minified JSON that exactly matches this TypeScript type – no comments, no extra keys, no Markdown:
@@ -178,25 +170,24 @@ export const parseResumePdf = onObjectFinalized(
         """
       `;
 
-      const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+      const aiResponse = await generativeModel!.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
       let jsonString = "";
       if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
-          const firstCandidate = aiResponse.response.candidates[0];
-          if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
-              jsonString = firstCandidate.content.parts[0].text || "";
+          const responseContent = aiResponse.response.candidates[0].content;
+          if (responseContent?.parts?.[0] && 'text' in responseContent.parts[0]) {
+              jsonString = responseContent.parts[0].text || "";
           }
       }
-      logger.log("🎯 Vertex AI raw JSON string:", jsonString, { name });
-
-      if (!jsonString.trim()) {
-        logger.warn("Vertex AI returned empty string. Writing parsingError to Firestore.", { name });
-         const errorResumeId = Date.now().toString();
-         await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
+ functionsLogger.info("🎯 Vertex AI raw JSON string:", jsonString, { name });
+ if (!jsonString.trim()) {
+ functionsLogger.warn("Vertex AI returned empty string. Writing parsingError to Firestore.", { name });
+ const errorResumeId = Date.now().toString();
+         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
              parsingError: "vertex_empty_response",
              storagePath: name,
              originalFileName: fileName,
-             createdAt: serverTimestamp(),
-             updatedAt: serverTimestamp(),
+             createdAt: firestoreServerTimestamp(),
+             updatedAt: firestoreServerTimestamp(),
          });
         return;
       }
@@ -205,48 +196,47 @@ export const parseResumePdf = onObjectFinalized(
       try {
         extractedData = JSON.parse(jsonString);
       } catch (e: any) {
-        logger.error("🚨 Failed to parse JSON from Vertex AI:", e.message, "Raw string:", jsonString, { name });
+ functionsLogger.error("🚨 Failed to parse JSON from Vertex AI:", e.message, "Raw string:", jsonString, { name });
         const errorResumeId = Date.now().toString();
-        await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
+        await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
           parsingError: `vertex_json_parse_error: ${e.message}`,
           rawAiOutput: jsonString,
           storagePath: name,
           originalFileName: fileName,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+          createdAt: firestoreServerTimestamp(),
+          updatedAt: firestoreServerTimestamp(),
         });
         return;
       }
-      logger.log("📊 Parsed JSON from Vertex AI:", extractedData, { name });
+      functionsLogger.log("📊 Parsed JSON from Vertex AI:", extractedData, { name });
 
-      if (!extractedData.personalInfo?.fullName) {
-        logger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.", { name, extractedData });
+      if (!extractedData?.personalInfo?.fullName) {
+ functionsLogger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.", { name, extractedData });
         const errorResumeId = Date.now().toString();
-        await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
+        await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ai_output_missing_fullname",
             extractedData: extractedData,
             storagePath: name,
             originalFileName: fileName,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt: firestoreServerTimestamp(),
+            updatedAt: firestoreServerTimestamp(),
         });
         return;
       }
 
-      // 4. Write to Firestore
       const resumeId = Date.now().toString();
-      const resumeDocRef = doc(db, "users", uid, "resumes", resumeId);
+      const resumeDocRef = firestoreDoc(db, "users", uid, "resumes", resumeId);
 
       const finalResumeData: FirestoreResumeData = {
         resumeId: resumeId,
         userId: uid,
         title: extractedData.title || fileName,
         personalInfo: {
-            fullName: extractedData.personalInfo?.fullName || null,
-            email: extractedData.personalInfo?.email || null,
-            phone: extractedData.personalInfo?.phone || null,
-            address: extractedData.personalInfo?.address || null,
-            jobTitle: extractedData.personalInfo?.jobTitle || null,
+            fullName: extractedData?.personalInfo?.fullName || null,
+            email: extractedData?.personalInfo?.email || null,
+            phone: extractedData?.personalInfo?.phone || null,
+            address: extractedData?.personalInfo?.address || null,
+            jobTitle: extractedData?.personalInfo?.jobTitle || null,
         },
         summary: extractedData.summary || extractedData.objective || null,
         education: (extractedData.education || []).map((edu: any) => ({
@@ -272,42 +262,44 @@ export const parseResumePdf = onObjectFinalized(
         parsingError: null,
         storagePath: name,
         originalFileName: fileName,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt: firestoreServerTimestamp(),
+        updatedAt: firestoreServerTimestamp(),
       };
 
-      await setDoc(resumeDocRef, finalResumeData);
-      logger.log("✅ Successfully wrote resume to users/%s/resumes/%s", uid, resumeId, { name });
+      await firestoreSetDoc(resumeDocRef, finalResumeData as any);
+ functionsLogger.log("✅ Successfully wrote resume to users/%s/resumes/%s", uid, resumeId, { name });
 
     } catch (error: any) {
-      logger.error("🚨 Unhandled error in parseResumePdf:", error.message, { name, errorObj: error });
+ functionsLogger.error("🚨 Unhandled error in parseResumePdf:", error.message, { name, errorObj: error });
       const errorResumeId = Date.now().toString();
-      await setDoc(doc(db, "users", uid, "resumes", errorResumeId), {
+      await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
         parsingError: `unknown_function_error: ${error.message}`,
         storagePath: name,
         originalFileName: fileName,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt: firestoreServerTimestamp(),
+        updatedAt: firestoreServerTimestamp(),
       });
     } finally {
         if (fs.existsSync(tempFilePath)) {
-            try {
-                fs.unlinkSync(tempFilePath);
-                logger.log("🗑️ Temporary file deleted:", tempFilePath, { name });
+ try {
+ fs.unlinkSync(tempFilePath);
+ functionsLogger.log("🗑️ Temporary file deleted:", tempFilePath, { name });
             } catch (unlinkError: any) {
-                logger.error("🚨 Error deleting temporary file:", unlinkError.message, { name, unlinkErrorObj: unlinkError });
+ functionsLogger.error("🚨 Error deleting temporary file:", unlinkError.message, { name, unlinkErrorObj: unlinkError });
             }
         }
     }
   }
 );
 
-export const suggestSummary = functions.https.onCall(async (data: { jobTitle?: string; yearsExp?: number; skills?: string[]; lang?: string }, context: CallableRequest<any>) => {
-  if (!context.auth) {
+export const suggestSummary = onCall(
+  async (request: CallableRequest<{ jobTitle?: string; yearsExp?: number; skills?: string[]; lang?: string }>) => { // Removed context argument as it is not used
+    const data = request.data;
+  if (!request.auth) { // Check for authentication using the passed context
     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
   }
   if (!generativeModel) {
-    logger.error("Vertex AI service not initialized for suggestSummary. Missing configuration.");
+    functionsLogger.error("Vertex AI service not initialized for suggestSummary. Missing configuration.");
     throw new functions.https.HttpsError('internal', 'AI service not available. Please try again later.');
   }
 
@@ -323,28 +315,33 @@ export const suggestSummary = functions.https.onCall(async (data: { jobTitle?: s
   `;
 
   try {
-    const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    const aiResponse = await generativeModel!.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    const responseContent: Content | null = aiResponse.response.candidates?.[0]?.content ?? null;
     let summaryText = "";
-     if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
-         const firstCandidate = aiResponse.response.candidates[0];
-         if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
-             summaryText = firstCandidate.content.parts[0].text || "";
+     if (responseContent && responseContent.parts && responseContent.parts.length > 0) {
+         const textPart = responseContent.parts.find((part: Part): part is { text: string } => 'text' in part) as { text: string } | undefined;
+         if (textPart) {
+ summaryText = textPart.text || "";
+         } else if (responseContent.parts[0] && 'text' in responseContent.parts[0]) { // Fallback for older structure
+            summaryText = responseContent.parts[0].text || "";
          }
      }
-    logger.info("💡 suggestSummary AI response:", { jobTitle, summaryText });
+ functionsLogger.info("💡 suggestSummary AI response:", { jobTitle, summaryText });
     return { summary: summaryText.trim() };
   } catch (error: any) {
-    logger.error("🚨 Error in suggestSummary:", error.message, { jobTitle, errorObj: error });
+ functionsLogger.error("🚨 Error in suggestSummary:", error.message, { jobTitle, errorObj: error });
     throw new functions.https.HttpsError('internal', 'Failed to generate summary.', error.message);
   }
 });
 
-export const suggestSkills = functions.https.onCall(async (data: { jobTitle?: string; max?: number; lang?: string }, context: CallableRequest<any>) => {
-  if (!context.auth) {
+export const suggestSkills = onCall( // Changed from functions.https.onCall to onCall
+  async (request: CallableRequest<{ jobTitle?: string; max?: number; lang?: string }>) => { // Removed context, use request.auth
+    const data = request.data;
+  if (!request.auth) { // Check auth from request
     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
   }
   if (!generativeModel) {
-    logger.error("Vertex AI service not initialized for suggestSkills. Missing configuration.");
+    functionsLogger.error("Vertex AI service not initialized for suggestSkills. Missing configuration.");
     throw new functions.https.HttpsError('internal', 'AI service not available. Please try again later.');
   }
 
@@ -360,26 +357,29 @@ export const suggestSkills = functions.https.onCall(async (data: { jobTitle?: st
   `;
 
   try {
-    const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    const aiResponse = await generativeModel!.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    const responseContent: Content | null = aiResponse.response.candidates?.[0]?.content ?? null;
     let skillsJsonString = "";
-    if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
-         const firstCandidate = aiResponse.response.candidates[0];
-         if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
-             skillsJsonString = firstCandidate.content.parts[0].text || "[]";
+    if (responseContent && responseContent.parts && responseContent.parts.length > 0) {
+         const textPart = responseContent.parts.find((part: Part): part is { text: string } => 'text' in part) as { text: string } | undefined;
+         if (textPart) {
+ skillsJsonString = textPart.text || "[]";
+         } else if (responseContent.parts[0] && 'text' in responseContent.parts[0]) { // Fallback
+            skillsJsonString = responseContent.parts[0].text || "[]";
          }
      }
-
-    logger.info("💡 suggestSkills AI response:", { jobTitle, skillsJsonString });
+    
+ functionsLogger.info("💡 suggestSkills AI response:", { jobTitle, skillsJsonString });
     let suggestedSkills: string[] = [];
     try {
         const parsed = JSON.parse(skillsJsonString);
         if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) {
             suggestedSkills = parsed;
         } else {
-            logger.warn("suggestSkills: AI response was not a valid JSON array of strings. Raw:", skillsJsonString, { jobTitle });
+            functionsLogger.warn("suggestSkills: AI response was not a valid JSON array of strings. Raw:", skillsJsonString, { jobTitle });
         }
     } catch (parseError: any) {
-        logger.error("🚨 Error parsing skills JSON from AI:", parseError.message, "Raw:", skillsJsonString, { jobTitle, parseErrorObj: parseError });
+        functionsLogger.error("🚨 Error parsing skills JSON from AI:", parseError.message, "Raw:", skillsJsonString, { jobTitle, parseErrorObj: parseError });
          if (typeof skillsJsonString === 'string' && !skillsJsonString.includes('[') && !skillsJsonString.includes('{')) {
             suggestedSkills = skillsJsonString.split(',').map(s => s.trim()).filter(Boolean);
          }
@@ -387,7 +387,9 @@ export const suggestSkills = functions.https.onCall(async (data: { jobTitle?: st
 
     return { skills: suggestedSkills.slice(0, max) };
   } catch (error: any) {
-    logger.error("🚨 Error in suggestSkills:", error.message, { jobTitle, errorObj: error });
+ functionsLogger.error("🚨 Error in suggestSkills:", error.message, { jobTitle, errorObj: error });
     throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
   }
 });
+
+    
