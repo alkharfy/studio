@@ -55,15 +55,16 @@ Enhanced CV Content:`,
 
 const enhanceCvContentFlow = ai.defineFlow<
   typeof EnhanceCvContentInputSchema,
-  typeof EnhanceCvContentOutputSchema
+  typeof EnhanceCvContentOutputSchema // Ensure output type matches here
 >({
   name: 'enhanceCvContentFlow',
   inputSchema: EnhanceCvContentInputSchema,
-  outputSchema: EnhanceCvContentOutputSchema,
+  outputSchema: EnhanceCvContentOutputSchema, // And here
 },
 async input => {
   const {output} = await prompt(input);
+  // Ensure the returned object matches EnhanceCvContentOutputSchema
   return {
-    enhancedCvContent: output!.enhancedCvContent,
+    enhancedCvContent: output?.enhancedCvContent || "", // Provide a default empty string if undefined
   };
 });

@@ -12,69 +12,65 @@ export interface UserProfile {
 // Structure aligning with Firestore data written by the updated Cloud Function
 // This interface should exactly match what the cloud function saves.
 export interface Resume {
-  resumeId: string; // Added by frontend or generated before write
-  userId: string; // Added by frontend
+  resumeId: string;
+  userId: string;
 
-  // Fields expected from Vertex AI extraction (can be null if not found)
   title?: string | null;
   personalInfo?: {
     fullName?: string | null;
     email?: string | null;
     phone?: string | null;
     address?: string | null;
-    jobTitle?: string | null; // Added jobTitle based on form/schema
+    jobTitle?: string | null;
   } | null;
-  summary?: string | null; // Mapped from 'objective' in older versions? Function now uses 'summary'
-  objective?: string | null; // Keep for backward compatibility or if prompt extracts it
+  summary?: string | null; // Changed from objective
+  objective?: string | null; // Kept for potential backward compatibility if old data exists
 
-  // Arrays from extraction - ensure structure matches function output
   education?: {
     degree?: string | null;
-    institute?: string | null; // Function might use 'institute'
-    institution?: string | null; // Form uses 'institution' - handle mapping
-    year?: string | null; // Function might use 'year'
-    graduationYear?: string | null; // Form uses 'graduationYear' - handle mapping
-    details?: string | null; // Added details field
+    institute?: string | null; // From older function output
+    institution?: string | null; // Preferred name, used in form
+    year?: string | null; // From older function output
+    graduationYear?: string | null; // Preferred name, used in form
+    details?: string | null;
   }[] | null;
 
   experience?: {
-    title?: string | null; // Function might use 'title'
-    jobTitle?: string | null; // Form uses 'jobTitle' - handle mapping
+    title?: string | null; // From older function output
+    jobTitle?: string | null; // Preferred name, used in form
     company?: string | null;
-    start?: string | null; // Function might use 'start'
-    startDate?: string | null; // Form uses 'startDate' - handle mapping
-    end?: string | null; // Function might use 'end'
-    endDate?: string | null; // Form uses 'endDate' - handle mapping
+    start?: string | null; // From older function output
+    startDate?: string | null; // Preferred name, used in form
+    end?: string | null; // From older function output
+    endDate?: string | null; // Preferred name, used in form
     description?: string | null;
   }[] | null;
 
-   // Skills: function prompt asks for string[], but writes { name: string }[] after mapping
-   // Let's assume the function *writes* { name: string }[] now.
-   skills?: {
+   skills?: { // Skills are now an array of objects
        name?: string | null;
    }[] | null;
 
-   // Languages: function prompt asks for { name, level }[]
    languages?: {
        name?: string | null;
-       level?: string | null;
+       level?: string | null; // Level can be optional
    }[] | null;
 
-    // Hobbies: function prompt asks for string[]
-   hobbies?: string[] | null;
+   hobbies?: string[] | null; // Hobbies are a simple array of strings
 
-   // Custom sections: function prompt doesn't explicitly ask, but Firestore structure allows it
    customSections?: {
      title?: string | null;
      content?: string | null;
     }[] | null;
 
+  // --- Metadata ---
+  parsingDone?: boolean;
+  parsingError?: string | null;
+  originalFileName?: string | null;
+  storagePath?: string | null;
+  // Fields from form not directly from parsing, but part of resume document
+  yearsExperience?: number | null;
+  jobDescriptionForAI?: string | null;
 
-  // --- Metadata set by Cloud Function / Frontend ---
-  parsingDone?: boolean; // Set by function
-  parsingError?: string | null; // Set by function on failure
-  originalFileName?: string | null; // Added by function
-  storagePath?: string | null; // Set by function
-  createdAt: Timestamp; // Set on creation (function or frontend)
-  updatedAt: Timestamp; // Set on creation/update
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }

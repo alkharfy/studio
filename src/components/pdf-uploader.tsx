@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as React from 'react';
@@ -7,7 +6,7 @@ import { ref, uploadBytesResumable, getDownloadURL, type StorageError } from 'fi
 // Removed Firestore imports (setDoc, serverTimestamp) as the client no longer simulates writing
 // import { doc, setDoc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
 import { useAuth } from '@/context/AuthContext';
-import { storage, db } from '@/lib/firebase/config'; // Keep db import for potential future listener implementation
+import { storage } from '@/lib/firebase/config'; // Keep db import for potential future listener implementation
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -25,17 +24,16 @@ type ParsedResumeData = Omit<Resume, 'createdAt' | 'updatedAt' | 'parsingDone' |
     parsingDone?: boolean;
     originalFileName?: string;
     storagePath?: string;
-     // We still expect the core fields to be potentially populated
     resumeId?: string;
     userId?: string;
     title?: string;
     personalInfo?: Resume['personalInfo'];
-    summary?: Resume['summary']; // Changed from 'objective'
+    summary?: Resume['summary'];
     education?: Resume['education'];
     experience?: Resume['experience'];
     skills?: Resume['skills'];
-    languages?: Resume['languages']; // Was array of objects {name, level}? Now string array based on func
-    hobbies?: Resume['hobbies']; // Was array of objects {name}? Now string array
+    languages?: Resume['languages'];
+    hobbies?: Resume['hobbies'];
     customSections?: Resume['customSections'];
 };
 
@@ -56,7 +54,6 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-   // Determine mock flag only by URL query ?mock=1
     const useMock = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get("mock") === "1" : false;
 
    if (useMock && typeof window !== 'undefined') {
@@ -65,19 +62,19 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
 
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setError(null); // Clear previous errors
+    setError(null);
     const file = event.target.files?.[0];
     if (file) {
       if (file.type !== 'application/pdf') {
         setError('الرجاء اختيار ملف PDF فقط.');
         setSelectedFile(null);
-        if (fileInputRef.current) fileInputRef.current.value = ''; // Reset input
+        if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
       if (file.size > MAX_FILE_SIZE_BYTES) {
         setError(`حجم الملف يتجاوز الحد الأقصى (${MAX_FILE_SIZE_MB} ميجابايت).`);
         setSelectedFile(null);
-         if (fileInputRef.current) fileInputRef.current.value = ''; // Reset input
+         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
       setSelectedFile(file);
@@ -96,10 +93,8 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
     setError(null);
     setUploadProgress(0);
 
-    // --- MOCK UPLOAD & PARSING (for testing without Firebase Function) ---
     if (useMock) {
-         console.log("--- MOCK UPLOAD & PARSE ---");
-         // Simulate upload progress
+         console.info("--- MOCK UPLOAD & PARSE ---");
          let mockProgress = 0;
          const interval = setInterval(() => {
              mockProgress += 10;
@@ -112,7 +107,6 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
                      description: 'محاكاة استخراج البيانات بدأت...',
                      variant: 'default',
                  });
-                 // Simulate parsing delay and return mock data
                  setTimeout(() => {
                       const mockParsedData: ParsedResumeData = {
                         resumeId: `mock_${Date.now()}`,
@@ -129,47 +123,37 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
                         education: [{ degree: "بكالوريوس علوم الحاسب (تجريبي)", institution: "جامعة تجريبية", graduationYear: "2023", details: "مشروع تخرج عن..." }],
                         experience: [{ jobTitle: "مطور مبتدئ (تجريبي)", company: "شركة تجريبية", startDate: "يناير 2024", endDate: "الحاضر", description: "وصف تجريبي للمهام والمسؤوليات." }],
                         skills: [{ name: "مهارة تجريبية 1" }, { name: "مهارة تجريبية 2" }],
-                        languages: [{ name: "لغة تجريبية", level: "مستوى تجريبي" }], // Example languages
-                        hobbies: ["هواية تجريبية 1", "هواية تجريبية 2"], // Example hobbies
-                        customSections: [{ title: "قسم تجريبي", content: "محتوى تجريبي" }], // Example custom section
-                        // Metadata fields that would be set by the real function:
+                        languages: [{ name: "لغة تجريبية", level: "مستوى تجريبي" }],
+                        hobbies: ["هواية تجريبية 1", "هواية تجريبية 2"],
+                        customSections: [{ title: "قسم تجريبي", content: "محتوى تجريبي" }],
                          parsingDone: true,
                          originalFileName: selectedFile.name,
                          storagePath: `mock_uploads/${currentUser.uid}/${selectedFile.name}`,
                      };
-                     console.log("--- MOCK PARSE COMPLETE ---", mockParsedData);
-                     // Call the handler (which is now removed from props, so this won't do anything)
-                     // onParsingComplete(mockParsedData);
-                     // Instead, we might need a different way to signal mock completion if the UI needs it directly
+                     console.info("--- MOCK PARSE COMPLETE ---", mockParsedData);
                       toast({
                          title: '✅ محاكاة الاستخراج تمت',
                          description: 'تم ملء النموذج ببيانات تجريبية.',
                          variant: 'default',
                      });
-                      // Reset state after mock
                       setSelectedFile(null);
                       if (fileInputRef.current) fileInputRef.current.value = '';
                       setTimeout(() => setUploadProgress(0), 1000);
-                 }, 3000); // Simulate 3 seconds parsing time
+                 }, 3000);
              }
-         }, 200); // Simulate progress update every 200ms
-         return; // Exit early for mock flow
+         }, 200);
+         return;
      }
-    // --- END MOCK UPLOAD ---
 
-
-    // --- REAL UPLOAD FLOW ---
     const fileName = `${Date.now()}_${selectedFile.name}`;
-    // Ensure metadata includes the UID for the Cloud Function
     const metadata = {
       customMetadata: {
-        'uid': currentUser.uid // Set the UID in metadata
+        'uid': currentUser.uid
       }
     };
     const storagePath = `resumes_uploads/${currentUser.uid}/${fileName}`;
     const storageRef = ref(storage, storagePath);
 
-    // Pass metadata during upload
     const uploadTask = uploadBytesResumable(storageRef, selectedFile, metadata);
 
     uploadTask.on(
@@ -180,7 +164,6 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
       },
       (uploadError: StorageError) => {
         console.error('Upload Error:', uploadError);
-        // Handle specific errors if needed (e.g., permissions)
          let message = 'حدث خطأ أثناء رفع الملف.';
          if (uploadError.code === 'storage/unauthorized') {
             message = 'ليس لديك إذن لرفع الملفات.';
@@ -195,35 +178,25 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
         });
         setIsUploading(false);
         setUploadProgress(0);
-        setSelectedFile(null); // Clear selection on error
+        setSelectedFile(null);
         if (fileInputRef.current) fileInputRef.current.value = '';
       },
       async () => {
-        // Upload completed successfully
         setIsUploading(false);
         setUploadProgress(100);
         toast({
           title: 'اكتمل الرفع بنجاح',
           description: 'بدأت معالجة ملف السيرة الذاتية في الخلفية. سيتم تحديث النموذج عند الانتهاء.',
-           variant: 'default', // Use default variant for success info
+           variant: 'default',
         });
 
         try {
-          // **REAL FLOW:** The Cloud Function `parseResumePdf` is now responsible
-          // for processing the uploaded file via Document AI/Vertex AI and writing
-          // the result to Firestore: `users/{uid}/resumes/{newResumeId}`.
-
-          // The parent component (page.tsx) will listen for the new/updated document
-          // in Firestore via the onSnapshot listener and update the form.
-
-          // Optional: Get download URL for debugging, but not essential for the flow
           const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          console.log('File uploaded successfully. Available at (for debug):', downloadURL);
-          console.log(`Cloud Function 'parseResumePdf' should trigger for path: ${storagePath}`);
+          console.info('File uploaded successfully. Available at (for debug):', downloadURL);
+          console.info(`Cloud Function 'parseResumePdf' should trigger for path: ${storagePath}`);
 
 
-        } catch (processError: any) {
-           // This catch block might now catch errors from getDownloadURL if that fails
+        } catch (processError: any) { // Explicitly type processError
            console.error('Error after upload (e.g., getting download URL):', processError);
            setError('حدث خطأ بعد اكتمال الرفع.');
            toast({
@@ -232,22 +205,14 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
              variant: 'destructive',
            });
         } finally {
-            // Clear the selected file immediately after the success toast.
              setSelectedFile(null);
              if (fileInputRef.current) fileInputRef.current.value = '';
-             // Reset progress after a short delay to show 100% briefly
              setTimeout(() => setUploadProgress(0), 1000);
         }
       }
     );
   };
 
-  const handleCancelUpload = () => {
-    // TODO: Implement cancellation logic if needed (using uploadTask.cancel())
-    console.log("Cancellation not implemented yet.");
-  };
-
-  //isLoading only depends on upload state now
   const isLoading = isUploading;
 
   return (
@@ -282,21 +247,12 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
               {isUploading ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}
               {isUploading ? 'جاري الرفع...' : 'رفع الملف'}
             </Button>
-            {/* Optional: Add cancel button
-             {isUploading && (
-                <Button variant="outline" size="icon" onClick={handleCancelUpload}>
-                    <X className="h-4 w-4" />
-                </Button>
-             )}
-            */}
         </div>
 
-        {/* Show selected file info */}
         {selectedFile && (
             <div className="text-sm text-muted-foreground flex items-center gap-2">
                 <FileText className="h-4 w-4" />
                 <span>الملف المختار: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)</span>
-                {/* Show check only when upload hits 100% */}
                 {uploadProgress === 100 && <Check className="h-4 w-4 text-green-600" />}
             </div>
         )}

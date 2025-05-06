@@ -1,11 +1,10 @@
-
 'use client';
 
 import * as React from 'react';
 import { useState, useCallback, useMemo } from 'react';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, useFieldArray, type UseFormReturn, useFormContext } from 'react-hook-form';
-import { z } from 'zod';
+// import { zodResolver } from '@hookform/resolvers/zod'; // Already in page.tsx
+import { useFieldArray, useFormContext } from 'react-hook-form';
+import type { z } from 'zod';
 import { Disclosure } from '@headlessui/react';
 import clsx from 'clsx';
 import { Button } from '@/components/ui/button';
@@ -30,44 +29,41 @@ import { doc, setDoc, collection, serverTimestamp, updateDoc } from 'firebase/fi
 import type { Resume as FirestoreResumeData } from '@/lib/dbTypes';
 import { PdfUploader } from '@/components/pdf-uploader';
 import type { User } from 'firebase/auth';
-import { getFunctions, httpsCallable, connectFunctionsEmulator, type Functions, type HttpsCallableResult } from 'firebase/functions';
+import { getFunctions, httpsCallable, connectFunctionsEmulator, type HttpsCallableResult } from 'firebase/functions'; // Removed unused types
 
 // Define Zod schema for the form
 const experienceSchema = z.object({
-  jobTitle: z.string().nullable().default(''), // Allow null, default empty
-  company: z.string().nullable().default(''), // Allow null, default empty
-  startDate: z.string().nullable().default(''), // Allow null, default empty
-  endDate: z.string().optional().nullable().default(''), // Allow null, optional, default empty
-  description: z.string().optional().nullable().default(''), // Allow null, optional, default empty
-}).default({}); // Default to empty object for appending
+  jobTitle: z.string().nullable().default(''),
+  company: z.string().nullable().default(''),
+  startDate: z.string().nullable().default(''),
+  endDate: z.string().optional().nullable().default(''),
+  description: z.string().optional().nullable().default(''),
+}).default({});
 
 const educationSchema = z.object({
-  degree: z.string().nullable().default(''), // Allow null, default empty
-  institution: z.string().nullable().default(''), // Allow null, default empty
-  graduationYear: z.string().nullable().default(''), // Allow null, default empty
-  details: z.string().optional().nullable().default(''), // Allow null, optional, default empty
-}).default({}); // Default to empty object for appending
+  degree: z.string().nullable().default(''),
+  institution: z.string().nullable().default(''),
+  graduationYear: z.string().nullable().default(''),
+  details: z.string().optional().nullable().default(''),
+}).default({});
 
 const skillSchema = z.object({
-  name: z.string().nullable().default(''), // Allow null, default empty
-}).default({}); // Default to empty object for appending
+  name: z.string().nullable().default(''),
+}).default({});
 
 
 export const cvSchema = z.object({
   resumeId: z.string().optional(),
   title: z.string().min(1, { message: 'يجب إدخال عنوان للسيرة الذاتية' }).default('مسودة السيرة الذاتية'),
-  // Personal Info - ensure required fields have min(1)
   fullName: z.string().min(1, { message: 'يجب إدخال الاسم الكامل' }),
   jobTitle: z.string().min(1, { message: 'يجب إدخال المسمى الوظيفي الحالي أو المرغوب' }),
   email: z.string().email({ message: 'البريد الإلكتروني غير صالح' }).min(1, { message: 'يجب إدخال البريد الإلكتروني' }),
   phone: z.string().min(1, { message: 'يجب إدخال رقم الهاتف' }),
   address: z.string().optional().nullable(),
   summary: z.string().min(10, { message: 'يجب أن يكون الملخص 10 أحرف على الأقل' }),
-  // Arrays - Use .default([]) to ensure they are arrays, individual items handled by item schemas
   experience: z.array(experienceSchema).default([]),
   education: z.array(educationSchema).default([]),
   skills: z.array(skillSchema).default([]),
-  // Added optional fields
   yearsExperience: z.number().min(0).optional().nullable(),
   jobDescriptionForAI: z.string().optional().nullable(),
 });
@@ -76,12 +72,10 @@ export const cvSchema = z.object({
 export type CvFormData = z.infer<typeof cvSchema>;
 
 interface CvFormProps {
-  isLoadingCv: boolean; // Renamed from isLoading to be specific
+  isLoadingCv: boolean;
 }
 
-// --- Normalization Function ---
 export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User | null): CvFormData => {
-    // Start with manual default values matching the schema structure
     const defaults: CvFormData = {
         resumeId: undefined,
         title: 'مسودة السيرة الذاتية',
@@ -98,78 +92,66 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
         jobDescriptionForAI: null,
     };
 
-    // Override defaults with current user info if available
     if (currentUser) {
       defaults.fullName = currentUser.displayName || defaults.fullName;
       defaults.email = currentUser.email || defaults.email;
     }
 
-    if (!raw) return defaults; // Return defaults if no raw data
+    if (!raw) return defaults;
 
-    console.log("[normalizeResumeData] Raw Firestore data:", raw);
+    console.info("[normalizeResumeData] Raw Firestore data:", raw);
 
-    // Map Firestore data to form data, falling back to defaults if needed
     const normalized: CvFormData = {
-        ...defaults, // Start with defaults
-        resumeId: raw.resumeId, // Use Firestore ID
+        ...defaults,
+        resumeId: raw.resumeId,
         title: raw.title || defaults.title,
-        // Personal Info
         fullName: raw.personalInfo?.fullName || defaults.fullName,
         jobTitle: raw.personalInfo?.jobTitle || defaults.jobTitle,
         email: raw.personalInfo?.email || defaults.email,
         phone: raw.personalInfo?.phone || defaults.phone,
         address: raw.personalInfo?.address || defaults.address,
-        // Summary/Objective
         summary: raw.summary || raw.objective || defaults.summary,
-        // Education Array: Map fields carefully, ensure structure matches, provide defaults
         education: (raw.education ?? []).map(edu => ({
-            degree: edu.degree ?? '', // Default to empty string if null/undefined
-            institution: edu.institution ?? edu.institute ?? '', // Handle both possible Firestore field names
-            graduationYear: edu.graduationYear ?? edu.year ?? '', // Handle both possible Firestore field names
-            details: edu.details ?? '', // Default to empty string
-        })).filter(edu => edu.degree || edu.institution || edu.graduationYear), // Filter out completely empty entries
-        // Experience Array: Map fields carefully
+            degree: edu.degree ?? '',
+            institution: edu.institution ?? edu.institute ?? '',
+            graduationYear: edu.graduationYear ?? edu.year ?? '',
+            details: edu.details ?? '',
+        })).filter(edu => edu.degree || edu.institution || edu.graduationYear),
         experience: (raw.experience ?? []).map(exp => ({
-            jobTitle: exp.jobTitle ?? exp.title ?? '', // Handle both names
+            jobTitle: exp.jobTitle ?? exp.title ?? '',
             company: exp.company ?? '',
-            startDate: exp.startDate ?? exp.start ?? '', // Handle both names
-            endDate: exp.endDate ?? exp.end ?? '', // Default empty if null/undefined
+            startDate: exp.startDate ?? exp.start ?? '',
+            endDate: exp.endDate ?? exp.end ?? '',
             description: exp.description ?? '',
         })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description),
-        // Skills Array: Map correctly based on Firestore structure ({ name: string })
         skills: (raw.skills ?? []).map(skill => ({
-            name: skill?.name ?? '', // Access name property, default empty
-        })).filter(skill => skill.name), // Filter out empty skills
-        // Keep other fields from defaults if not present in raw data
-        yearsExperience: defaults.yearsExperience, // Currently not mapped from raw
-        jobDescriptionForAI: defaults.jobDescriptionForAI,
+            name: skill?.name ?? '',
+        })).filter(skill => skill.name),
+        yearsExperience: raw.yearsExperience ?? defaults.yearsExperience, // Added from previous request
+        jobDescriptionForAI: raw.jobDescriptionForAI ?? defaults.jobDescriptionForAI, // Added from previous request
     };
 
-     console.log("[normalizeResumeData] Normalized form data:", normalized);
+     console.info("[normalizeResumeData] Normalized form data:", normalized);
     return normalized;
 };
-// --- End Normalization Function ---
 
-
-// Use useFormContext to get the form instance from the parent provider
 export function CvForm({ isLoadingCv }: CvFormProps) {
-  const form = useFormContext<CvFormData>(); // Get form instance from context
-  const [isGenerating, setIsGenerating] = useState(false); // For AI content enhancement
+  const form = useFormContext<CvFormData>();
+  const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isLoadingAISkills, setIsLoadingAISkills] = useState(false); // Loading state for AI skills
-  const [isLoadingAISummary, setIsLoadingAISummary] = useState(false); // Loading state for AI summary
+  const [isLoadingAISkills, setIsLoadingAISkills] = useState(false);
+  const [isLoadingAISummary, setIsLoadingAISummary] = useState(false);
   const { toast } = useToast();
   const { currentUser } = useAuth();
 
-  // --- Firebase Functions Initialization (Client-side only) ---
   const functionsInstance = useMemo(() => {
     if (typeof window !== 'undefined' && auth.app) {
       const functions = getFunctions(auth.app);
       if (process.env.NEXT_PUBLIC_USE_EMULATOR === 'true') {
         try {
           connectFunctionsEmulator(functions, "127.0.0.1", 5001);
-          console.log("Connected to Functions Emulator from CvForm.");
-        } catch (error) {
+          console.info("Connected to Functions Emulator from CvForm.");
+        } catch (error: any) { // Added type for error
            if (!(error instanceof Error && error.message.includes('already connected'))) {
              console.error("Error connecting to Functions emulator from CvForm:", error);
            }
@@ -182,7 +164,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
 
   const suggestSummaryFn = useMemo(() => functionsInstance ? httpsCallable< { jobTitle: string; yearsExp: number; skills: string[]; lang: string; }, { summary: string } >(functionsInstance, 'suggestSummary') : null, [functionsInstance]);
   const suggestSkillsFn = useMemo(() => functionsInstance ? httpsCallable< { jobTitle: string; max?: number; lang?: string; }, { skills: string[] } >(functionsInstance, 'suggestSkills') : null, [functionsInstance]);
-  // --- End Firebase Functions Initialization ---
 
 
   const { fields: experienceFields, append: appendExperience, remove: removeExperience } = useFieldArray({
@@ -200,25 +181,24 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     name: 'skills',
   });
 
-  // Function to format CV data into a single string for AI enhancement
-  const formatCvForAI = (data: CvFormData): string => {
-    let cvString = `الاسم: ${data.fullName}\n`;
-    cvString += `المسمى الوظيفي: ${data.jobTitle}\n`;
-    cvString += `البريد الإلكتروني: ${data.email}\n`;
-    cvString += `الهاتف: ${data.phone}\n`;
+  const formatCvForAI = useCallback((data: CvFormData): string => { // Wrapped in useCallback
+    let cvString = `الاسم: ${data.fullName || ''}\n`;
+    cvString += `المسمى الوظيفي: ${data.jobTitle || ''}\n`;
+    cvString += `البريد الإلكتروني: ${data.email || ''}\n`;
+    cvString += `الهاتف: ${data.phone || ''}\n`;
     if (data.address) cvString += `العنوان: ${data.address}\n`;
-    cvString += `الملخص: ${data.summary}\n\n`;
+    cvString += `الملخص: ${data.summary || ''}\n\n`;
 
     cvString += "الخبرة العملية:\n";
     (data.experience || []).forEach((exp) => {
-      cvString += `- ${exp.jobTitle} في ${exp.company} (${exp.startDate} - ${exp.endDate || 'الحاضر'})\n`;
+      cvString += `- ${exp.jobTitle || ''} في ${exp.company || ''} (${exp.startDate || ''} - ${exp.endDate || 'الحاضر'})\n`;
       if (exp.description) cvString += `  ${exp.description}\n`;
     });
     cvString += "\n";
 
     cvString += "التعليم:\n";
     (data.education || []).forEach((edu) => {
-      cvString += `- ${edu.degree}, ${edu.institution} (${edu.graduationYear})\n`;
+      cvString += `- ${edu.degree || ''}, ${edu.institution || ''} (${edu.graduationYear || ''})\n`;
       if (edu.details) cvString += `  ${edu.details}\n`;
     });
     cvString += "\n";
@@ -227,18 +207,16 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     cvString += (data.skills || []).map(skill => skill.name).join(', ') + '\n';
 
     return cvString;
-  };
+  }, []);
 
-   // --- AI Suggestion Handlers ---
-
-   const handleAISkills = async () => {
+   const handleAISkills = useCallback(async () => { // Wrapped in useCallback
     if (!suggestSkillsFn) {
         toast({ title: 'خطأ', description: 'خدمة اقتراح المهارات غير متاحة حالياً.', variant: 'destructive' });
         return;
     }
     const jobTitle = form.getValues('jobTitle');
     if (!jobTitle) {
-        toast({ title: 'معلومة', description: 'الرجاء إدخال المسمى الوظيفي أولاً لاقتراح المهارات.', variant: 'default' }); // Use default variant for info
+        toast({ title: 'معلومة', description: 'الرجاء إدخال المسمى الوظيفي أولاً لاقتراح المهارات.', variant: 'default' });
         return;
     }
     setIsLoadingAISkills(true);
@@ -252,20 +230,18 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
       if (result.data?.skills && Array.isArray(result.data.skills)) {
           const currentSkillNames = form.getValues('skills').map(s => s.name?.toLowerCase()).filter(Boolean);
           const newSkillsToAdd = result.data.skills
-             .filter(skill => skill && !currentSkillNames.includes(skill.toLowerCase())) // Filter out duplicates/empty
-             .map(skill => ({ name: skill })); // Map to { name: string }
+             .filter(skill => skill && !currentSkillNames.includes(skill.toLowerCase()))
+             .map(skill => ({ name: skill }));
 
            if (newSkillsToAdd.length > 0) {
-                appendSkill(newSkillsToAdd); // Append only unique new skills
+                appendSkill(newSkillsToAdd);
                 toast({ title: "نجاح", description: "تم اقتراح وإضافة مهارات جديدة بنجاح!" });
             } else {
                  toast({ title: "لا مهارات جديدة", description: "لم يتم العثور على مهارات جديدة لإضافتها.", variant:'default' });
             }
       } else {
-          // Handle case where AI returns empty or invalid data structure
            console.warn("Suggest Skills: AI returned no skills or invalid format", result.data);
            toast({ title: "لم يتم العثور على مهارات", description: "لم يتمكن الذكاء الاصطناعي من اقتراح مهارات لهذا المسمى الوظيفي.", variant: 'default' });
-           // throw new Error("Invalid response format from suggestSkills function.");
       }
 
     } catch (error: any) {
@@ -281,15 +257,15 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     } finally {
       setIsLoadingAISkills(false);
     }
-  };
+  }, [suggestSkillsFn, form, toast, appendSkill]);
 
-  const handleAISummary = async () => {
+  const handleAISummary = useCallback(async () => { // Wrapped in useCallback
       if (!suggestSummaryFn) {
         toast({ title: 'خطأ', description: 'خدمة اقتراح النبذة غير متاحة حالياً.', variant: 'destructive' });
         return;
       }
       const jobTitle = form.getValues('jobTitle');
-      const yearsExp = form.getValues('yearsExperience'); // TODO: Calculate this from experience dates for better accuracy
+      const yearsExp = form.getValues('yearsExperience');
       const skills = form.getValues('skills').map(s => s.name).filter(Boolean).slice(0, 5) as string[];
 
       if (!jobTitle) {
@@ -301,7 +277,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
       try {
           const result: HttpsCallableResult<{ summary: string }> = await suggestSummaryFn({
               jobTitle: jobTitle,
-              yearsExp: yearsExp ?? 0, // Pass calculated or default yearsExperience
+              yearsExp: yearsExp ?? 0,
               skills: skills,
               lang: "ar",
           });
@@ -312,7 +288,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
           } else {
                console.warn("Suggest Summary: AI returned no summary or invalid format", result.data);
                toast({ title: "لم يتم إنشاء النبذة", description: "لم يتمكن الذكاء الاصطناعي من توليد نبذة.", variant: 'default' });
-               // throw new Error("Invalid response format from suggestSummary function.");
           }
 
       } catch (error: any) {
@@ -328,13 +303,13 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
       } finally {
           setIsLoadingAISummary(false);
       }
-  };
+  }, [suggestSummaryFn, form, toast]);
 
 
-  const handleEnhanceContent = async () => {
+  const handleEnhanceContent = useCallback(async () => { // Wrapped in useCallback
     const jobDesc = form.getValues('jobDescriptionForAI');
     const currentSummary = form.getValues('summary');
-    const cvContent = formatCvForAI(form.getValues()); // Format current form state
+    const cvContent = formatCvForAI(form.getValues());
 
     if (!jobDesc) {
       toast({
@@ -348,13 +323,13 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     setIsGenerating(true);
     try {
        const inputData: EnhanceCvContentInput = {
-         cvContent: `الملخص الحالي: ${currentSummary}\n\nالسيرة الذاتية الكاملة:\n${cvContent}`, // Send current summary + full CV context
+         cvContent: `الملخص الحالي: ${currentSummary || ''}\n\nالسيرة الذاتية الكاملة:\n${cvContent}`,
          jobDescription: jobDesc,
        };
-      const result = await enhanceCvContent(inputData); // Call Genkit flow
+      const result = await enhanceCvContent(inputData);
 
        if (result.enhancedCvContent) {
-           form.setValue('summary', result.enhancedCvContent, { shouldValidate: true }); // Update only the summary field
+           form.setValue('summary', result.enhancedCvContent, { shouldValidate: true });
            toast({
              title: 'نجاح',
              description: 'تم تحسين ملخص السيرة الذاتية بنجاح!',
@@ -377,22 +352,20 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
     } finally {
       setIsGenerating(false);
     }
-  };
+  }, [form, formatCvForAI, toast]);
 
-    async function onSubmit(values: CvFormData) {
+    const onSubmit = useCallback(async (values: CvFormData) => { // Wrapped in useCallback
         if (!currentUser) {
             toast({ title: 'خطأ', description: 'يجب تسجيل الدخول لحفظ السيرة الذاتية.', variant: 'destructive' });
             return;
         }
         setIsSaving(true);
-         console.log("[onSubmit] Form values being saved:", values);
+         console.info("[onSubmit] Form values being saved:", values);
         try {
-             // Map form data (CvFormData) back to Firestore structure (FirestoreResumeData)
-             // Ensure all fields expected by FirestoreResumeData are included, defaulting null/empty arrays
             const resumeDataToSave = {
                 userId: currentUser.uid,
-                resumeId: values.resumeId || '', // Keep existing ID or it will be set below
-                title: values.title || 'مسودة السيرة الذاتية', // Default title
+                resumeId: values.resumeId || '',
+                title: values.title || 'مسودة السيرة الذاتية',
                 personalInfo: {
                     fullName: values.fullName || null,
                     jobTitle: values.jobTitle || null,
@@ -401,62 +374,52 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                     address: values.address || null,
                 },
                 summary: values.summary || null,
-                // Map education back, ensuring properties exist or are null
                 education: (values.education || []).map(edu => ({
                     degree: edu.degree || null,
-                    institution: edu.institution || null, // Use 'institution'
-                    graduationYear: edu.graduationYear || null, // Use 'graduationYear'
+                    institution: edu.institution || null,
+                    graduationYear: edu.graduationYear || null,
                     details: edu.details || null,
-                })).filter(edu => edu.degree || edu.institution || edu.graduationYear), // Filter empty
-                // Map experience back
+                })).filter(edu => edu.degree || edu.institution || edu.graduationYear),
                 experience: (values.experience || []).map(exp => ({
-                    jobTitle: exp.jobTitle || null, // Use 'jobTitle'
+                    jobTitle: exp.jobTitle || null,
                     company: exp.company || null,
-                    startDate: exp.startDate || null, // Use 'startDate'
-                    endDate: exp.endDate || null, // Use 'endDate'
+                    startDate: exp.startDate || null,
+                    endDate: exp.endDate || null,
                     description: exp.description || null,
-                })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description), // Filter empty
-                // Map skills back
+                })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description),
                 skills: (values.skills || []).map(skill => ({
                     name: skill.name || null,
-                })).filter(skill => skill.name), // Filter empty
-                // Default empty arrays for fields not currently in the form
-                languages: [], // Default empty, or map if form includes languages
-                hobbies: [],   // Default empty, or map if form includes hobbies
-                customSections: [], // Default empty, or map if form includes custom sections
+                })).filter(skill => skill.name),
+                languages: [],
+                hobbies: [],
+                customSections: [],
                 updatedAt: serverTimestamp(),
-                // DO NOT overwrite parsingDone, storagePath, originalFileName, createdAt here
-                // These should only be set initially by the function or preserved
             };
 
             let docRef;
             if (values.resumeId) {
-                // Update existing document
                 docRef = doc(db, 'users', currentUser.uid, 'resumes', values.resumeId);
-                // Use updateDoc to only change fields present in resumeDataToSave
                  await updateDoc(docRef, resumeDataToSave);
                 toast({ title: 'تم التحديث', description: 'تم تحديث سيرتك الذاتية بنجاح.' });
-                console.log('[onSubmit] CV Updated:', values.resumeId);
+                console.info('[onSubmit] CV Updated:', values.resumeId);
             } else {
-                 // Create new document
                 const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
-                docRef = doc(resumesCollectionRef); // Generate new ID
+                docRef = doc(resumesCollectionRef);
                  const newResumeId = docRef.id;
-                 resumeDataToSave.resumeId = newResumeId; // Add the generated ID to the data
+                 (resumeDataToSave as any).resumeId = newResumeId; // Type assertion
 
-                // Add fields expected for a *new* document creation
                 const fullDataToSave = {
                     ...resumeDataToSave,
-                    parsingDone: false, // New manual entry, not parsed
-                    storagePath: null, // No associated storage item yet
-                    originalFileName: null, // No original file name
-                    createdAt: serverTimestamp(), // Set creation timestamp
+                    parsingDone: false,
+                    storagePath: null,
+                    originalFileName: null,
+                    createdAt: serverTimestamp(),
                 };
 
                  await setDoc(docRef, fullDataToSave);
-                form.setValue('resumeId', newResumeId); // Update form state with the new ID
+                form.setValue('resumeId', newResumeId);
                 toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية الجديدة بنجاح.' });
-                console.log('[onSubmit] CV Saved with new ID:', newResumeId);
+                console.info('[onSubmit] CV Saved with new ID:', newResumeId);
             }
 
         } catch (error) {
@@ -469,15 +432,13 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
         } finally {
             setIsSaving(false);
         }
-    }
+    }, [currentUser, toast, form]); // Added form to dependencies
 
-  // Show main loading indicator if initial CV data is loading OR if PDF is processing
   if (isLoadingCv) {
      return (
        <div className="flex min-h-[calc(100vh-100px)] items-center justify-center p-8">
          <Loader2 className="h-8 w-8 animate-spin text-primary" />
           <p className='mr-4 text-muted-foreground'>
-              {/* Adjust message based on specific loading state if available */}
               جاري تحميل البيانات أو معالجة الملف...
             </p>
        </div>
@@ -485,13 +446,12 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
    }
 
   const resumeId = form.watch('resumeId');
-  const jobTitleValue = form.watch('jobTitle'); // Watch jobTitle to disable AI buttons
-  const jobDescriptionForAIValue = form.watch('jobDescriptionForAI'); // Watch job description
+  const jobTitleValue = form.watch('jobTitle');
+  const jobDescriptionForAIValue = form.watch('jobDescriptionForAI');
 
   return (
       <div className="p-4">
          <div className="mb-8">
-             {/* PDFUploader triggers the cloud function, results handled by listener */}
             <PdfUploader />
          </div>
 
@@ -499,7 +459,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
            className="space-y-8"
            onSubmit={form.handleSubmit(onSubmit)}
          >
-            {/* --- Personal Information Disclosure --- */}
              <Disclosure defaultOpen>
                {({ open }) => (
                  <Card>
@@ -579,25 +538,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                </FormItem>
                              )}
                            />
-                           {/* Example: Optional Years Experience Field */}
-                            {/* <FormField
-                                control={form.control}
-                                name="yearsExperience"
-                                render={({ field }) => (
-                                <FormItem>
-                                    <FormLabel>سنوات الخبرة (اختياري)</FormLabel>
-                                    <FormControl>
-                                        <Input type="number" min="0" placeholder="مثال: 5"
-                                            {...field}
-                                            value={field.value ?? ''} // Handle null/undefined from form state
-                                            onChange={e => field.onChange(e.target.value === '' ? null : parseInt(e.target.value, 10))} // Parse to number or null
-                                        />
-                                    </FormControl>
-                                     <FormDescription>تُستخدم للمساعدة في توليد النبذة.</FormDescription>
-                                    <FormMessage />
-                                </FormItem>
-                                )}
-                            /> */}
                          </CardContent>
                      </Disclosure.Panel>
                  </Card>
@@ -605,7 +545,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
             </Disclosure>
 
 
-           {/* --- Summary Disclosure --- */}
            <Disclosure defaultOpen>
                 {({ open }) => (
                     <Card>
@@ -637,12 +576,11 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                    </FormItem>
                                  )}
                                />
-                                {/* AI Summary Button */}
                                 <Button
                                      type="button"
                                      variant="ghost"
                                      onClick={handleAISummary}
-                                     disabled={isLoadingAISummary || !jobTitleValue || !suggestSummaryFn} // Disable if no job title or function unavailable
+                                     disabled={isLoadingAISummary || !jobTitleValue || !suggestSummaryFn}
                                      className="mt-2 text-accent hover:bg-accent/10 disabled:opacity-50 disabled:cursor-not-allowed"
                                      aria-label="كتابة نبذة بالذكاء الاصطناعي"
                                  >
@@ -655,7 +593,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                 )}
            </Disclosure>
 
-          {/* AI Enhancement Section */}
            <Disclosure defaultOpen>
                 {({ open }) => (
                     <Card>
@@ -677,7 +614,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                            <Textarea
                                              placeholder="الصق هنا الوصف الوظيفي للوظيفة التي تتقدم لها..."
                                              className="resize-y min-h-[150px]"
-                                              value={field.value ?? ''} // Handle null/undefined
+                                              value={field.value ?? ''}
                                               onChange={field.onChange}
                                               onBlur={field.onBlur}
                                               name={field.name}
@@ -694,7 +631,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                   <Button
                                      type="button"
                                      onClick={handleEnhanceContent}
-                                     disabled={isGenerating || !jobDescriptionForAIValue} // Disable if generating or no job description
+                                     disabled={isGenerating || !jobDescriptionForAIValue}
                                      className="bg-accent hover:bg-accent/90 text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                                      aria-label="تحسين الملخص بناءً على الوصف الوظيفي"
                                    >
@@ -711,7 +648,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                 )}
            </Disclosure>
 
-           {/* --- Work Experience Disclosure --- */}
            <Disclosure defaultOpen>
                 {({ open }) => (
                     <Card>
@@ -723,7 +659,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({})); }} // Use schema default
+                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({})); }}
                                         className="z-10"
                                         aria-label="إضافة خبرة"
                                     >
@@ -741,44 +677,41 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                 )}
                                {experienceFields.map((field, index) => (
                                  <div key={field.id} className="space-y-4 p-4 border rounded-md relative group">
-                                    {/* Job Title */}
                                     <FormField
                                        control={form.control}
                                        name={`experience.${index}.jobTitle`}
-                                       render={({ field }) => (
+                                       render={({ field: formField }) => ( // Renamed field to formField
                                          <FormItem>
                                            <FormLabel>المسمى الوظيفي</FormLabel>
                                            <FormControl>
-                                             <Input placeholder="مثال: مطور واجهة أمامية" {...field} value={field.value ?? ''} />
+                                             <Input placeholder="مثال: مطور واجهة أمامية" {...formField} value={formField.value ?? ''} />
                                            </FormControl>
                                            <FormMessage />
                                          </FormItem>
                                        )}
                                      />
-                                      {/* Company */}
                                       <FormField
                                        control={form.control}
                                        name={`experience.${index}.company`}
-                                       render={({ field }) => (
+                                       render={({ field: formField }) => (
                                          <FormItem>
                                            <FormLabel>الشركة</FormLabel>
                                            <FormControl>
-                                             <Input placeholder="مثال: شركة تقنية ناشئة" {...field} value={field.value ?? ''} />
+                                             <Input placeholder="مثال: شركة تقنية ناشئة" {...formField} value={formField.value ?? ''} />
                                            </FormControl>
                                            <FormMessage />
                                          </FormItem>
                                        )}
                                      />
-                                      {/* Dates */}
                                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                           <FormField
                                              control={form.control}
                                              name={`experience.${index}.startDate`}
-                                             render={({ field }) => (
+                                             render={({ field: formField }) => (
                                                <FormItem>
                                                  <FormLabel>تاريخ البدء</FormLabel>
                                                  <FormControl>
-                                                   <Input placeholder="مثال: يناير 2020" {...field} value={field.value ?? ''} />
+                                                   <Input placeholder="مثال: يناير 2020" {...formField} value={formField.value ?? ''} />
                                                  </FormControl>
                                                  <FormMessage />
                                                </FormItem>
@@ -787,37 +720,35 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                            <FormField
                                              control={form.control}
                                              name={`experience.${index}.endDate`}
-                                              render={({ field }) => (
+                                              render={({ field: formField }) => (
                                                <FormItem>
                                                  <FormLabel>تاريخ الانتهاء (اتركه فارغًا للحالي)</FormLabel>
                                                  <FormControl>
-                                                   <Input placeholder="مثال: ديسمبر 2022" {...field} value={field.value ?? ''} />
+                                                   <Input placeholder="مثال: ديسمبر 2022" {...formField} value={formField.value ?? ''} />
                                                  </FormControl>
                                                  <FormMessage />
                                                </FormItem>
                                              )}
                                            />
                                       </div>
-                                       {/* Description */}
                                       <FormField
                                        control={form.control}
                                        name={`experience.${index}.description`}
-                                        render={({ field }) => (
+                                        render={({ field: formField }) => (
                                          <FormItem>
                                            <FormLabel>الوصف (اختياري)</FormLabel>
                                            <FormControl>
                                               <Textarea
                                                  placeholder="صف مهامك وإنجازاتك الرئيسية..."
                                                  className="min-h-[80px]"
-                                                 {...field}
-                                                 value={field.value ?? ''}
+                                                 {...formField}
+                                                 value={formField.value ?? ''}
                                                  />
                                            </FormControl>
                                            <FormMessage />
                                          </FormItem>
                                        )}
                                      />
-                                   {/* Remove Button */}
                                    <Button
                                      type="button"
                                      variant="ghost"
@@ -836,7 +767,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                 )}
            </Disclosure>
 
-            {/* --- Education Disclosure --- */}
             <Disclosure defaultOpen>
                 {({ open }) => (
                     <Card>
@@ -848,7 +778,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendEducation(educationSchema.parse({})); }} // Use schema default
+                                        onClick={(e) => { e.stopPropagation(); appendEducation(educationSchema.parse({})); }}
                                         className="z-10"
                                         aria-label="إضافة تعليم"
                                     >
@@ -866,68 +796,63 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                )}
                                {educationFields.map((field, index) => (
                                  <div key={field.id} className="space-y-4 p-4 border rounded-md relative group">
-                                   {/* Degree */}
                                    <FormField
                                      control={form.control}
                                      name={`education.${index}.degree`}
-                                     render={({ field }) => (
+                                     render={({ field: formField }) => (
                                        <FormItem>
                                          <FormLabel>الشهادة أو الدرجة العلمية</FormLabel>
                                          <FormControl>
-                                           <Input placeholder="مثال: بكالوريوس علوم الحاسب" {...field} value={field.value ?? ''} />
+                                           <Input placeholder="مثال: بكالوريوس علوم الحاسب" {...formField} value={formField.value ?? ''} />
                                          </FormControl>
                                          <FormMessage />
                                        </FormItem>
                                      )}
                                    />
-                                    {/* Institution */}
                                     <FormField
                                      control={form.control}
                                      name={`education.${index}.institution`}
-                                     render={({ field }) => (
+                                     render={({ field: formField }) => (
                                        <FormItem>
                                          <FormLabel>المؤسسة التعليمية</FormLabel>
                                          <FormControl>
-                                           <Input placeholder="مثال: جامعة الملك سعود" {...field} value={field.value ?? ''} />
+                                           <Input placeholder="مثال: جامعة الملك سعود" {...formField} value={formField.value ?? ''} />
                                          </FormControl>
                                          <FormMessage />
                                        </FormItem>
                                      )}
                                    />
-                                    {/* Graduation Year */}
                                    <FormField
                                      control={form.control}
                                      name={`education.${index}.graduationYear`}
-                                     render={({ field }) => (
+                                     render={({ field: formField }) => (
                                        <FormItem>
                                          <FormLabel>سنة التخرج</FormLabel>
                                          <FormControl>
-                                           <Input placeholder="مثال: 2019" {...field} value={field.value ?? ''} />
+                                           <Input placeholder="مثال: 2019" {...formField} value={formField.value ?? ''} />
                                          </FormControl>
                                          <FormMessage />
                                        </FormItem>
                                      )}
                                    />
-                                    {/* Details */}
                                    <FormField
                                      control={form.control}
                                      name={`education.${index}.details`}
-                                      render={({ field }) => (
+                                      render={({ field: formField }) => (
                                        <FormItem>
                                          <FormLabel>تفاصيل إضافية (اختياري)</FormLabel>
                                          <FormControl>
                                             <Textarea
                                              placeholder="مثال: مشروع التخرج، مرتبة الشرف..."
                                              className="min-h-[80px]"
-                                             {...field}
-                                              value={field.value ?? ''}
+                                             {...formField}
+                                              value={formField.value ?? ''}
                                              />
                                          </FormControl>
                                          <FormMessage />
                                        </FormItem>
                                      )}
                                    />
-                                   {/* Remove Button */}
                                   <Button
                                      type="button"
                                      variant="ghost"
@@ -946,7 +871,6 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                 )}
            </Disclosure>
 
-           {/* --- Skills Disclosure --- */}
             <Disclosure defaultOpen>
                 {({ open }) => (
                     <Card>
@@ -958,7 +882,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendSkill(skillSchema.parse({})); }} // Use schema default
+                                        onClick={(e) => { e.stopPropagation(); appendSkill(skillSchema.parse({})); }}
                                         className="z-10"
                                         aria-label="إضافة مهارة"
                                     >
@@ -980,11 +904,11 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                      <FormField
                                        control={form.control}
                                        name={`skills.${index}.name`}
-                                       render={({ field }) => (
+                                       render={({ field: formField }) => (
                                          <FormItem className="flex-grow">
                                            <FormLabel className="sr-only">المهارة</FormLabel>
                                            <FormControl>
-                                             <Input placeholder={index === 0 ? "مثال: JavaScript, القيادة, حل المشكلات" : "مهارة أخرى..."} {...field} value={field.value ?? ''}/>
+                                             <Input placeholder={index === 0 ? "مثال: JavaScript, القيادة, حل المشكلات" : "مهارة أخرى..."} {...formField} value={formField.value ?? ''}/>
                                            </FormControl>
                                            <FormMessage />
                                          </FormItem>
@@ -1002,12 +926,11 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                      </Button>
                                   </div>
                                ))}
-                                {/* AI Skills Button */}
                                <Button
                                      type="button"
                                      variant="ghost"
                                      onClick={handleAISkills}
-                                     disabled={isLoadingAISkills || !jobTitleValue || !suggestSkillsFn} // Disable if no job title or function unavailable
+                                     disabled={isLoadingAISkills || !jobTitleValue || !suggestSkillsFn}
                                      className="mt-2 text-accent hover:bg-accent/10 disabled:opacity-50 disabled:cursor-not-allowed"
                                      aria-label="اقتراح مهارات بالذكاء الاصطناعي"
                                  >
