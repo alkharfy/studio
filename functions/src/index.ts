@@ -156,8 +156,8 @@ export const parseResumePdf = onObjectFinalized(
             // Limit OCR text to 15k characters to stay within token budget
             const textSnippet = text.slice(0, 15000);
 
-            const prompt = `/* ----------  Vertex-AI Prompt  ---------- */
-
+             /* ----------  Vertex-AI Prompt  ---------- */
+             const prompt = `
 You are an expert Arabic/English résumé parser.
 Return **ONLY** minified JSON that exactly matches this TypeScript type – no comments, no extra keys, no Markdown:
 
@@ -182,7 +182,6 @@ type Resume = {
 👉 **Example you MUST follow**
 INPUT snippet
 
-
 September 2018 – July 2023 Bachelor of petroleum engineering
 Suez University Grade: Excellent with honor
 EXPECTED JSON fragment
@@ -199,16 +198,19 @@ Analyzed daily production department workflows …
 EXPECTED JSON fragment
 \`\`\`json
 "experience":[
-    {"title": "متدرب عمليات الإنتاج", "company": "شركة الواحة للبترول", "start": "يوليو 2022", "end": null, "description": "تحليل سير العمل اليومي لقسم الإنتاج..."}
+    {"title":"متدرب عمليات الإنتاج","company":"Oasis Petroleum Company", "start":"07/2022","end":"","description":"حللت سير عمل قسم الإنتاج اليومي …"}
 ]
 \`\`\`
 
-Text to analyse:
-\"\"\"
-${textSnippet}
-\"\"\"
+If a field is truly missing, output an empty string "" or empty array [].
+
+TEXT TO ANALYSE (Arabic + English may be mixed – keep Arabic in output):
+"""
+${textSnippet} /* <= first 15 000 chars passed from Cloud Function */
+"""
 
 JSON Output:
+/* ---------- End Prompt ---------- */
             `; // Keep text slicing for safety
 
             logger.log("Sending request to Vertex AI (Gemini)...");
