@@ -45,16 +45,18 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 echo "Granting roles/datastore.user (for Firestore)..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
-  --role="roles/datastore.user" # This role grants Firestore read/write access
-  --condition=None
+  --role="roles/datastore.user" \
+  --condition=None # Corrected: Ensure no condition is explicitly stated if not needed, or specify a valid one.
 
 # Grant Storage Admin role to allow the function to read from the bucket
-# (Object Viewer might be sufficient, but Admin is safer for potential future needs like metadata changes)
+# and potentially write metadata or processed files.
+# For stricter permissions, use roles/storage.objectViewer for reading
+# and roles/storage.objectCreator for writing new objects.
 echo "Granting roles/storage.objectAdmin..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
-  --role="roles/storage.objectAdmin"
-  --condition=None
+  --role="roles/storage.objectAdmin" \
+  --condition=None # Ensure no condition or a valid one
 
 
 # --- Optional Roles (Uncomment if needed) ---
@@ -78,15 +80,20 @@ echo "--- IAM roles granted successfully. ---"
 echo ""
 echo "--- Set Functions Configuration ---"
 echo "Setting configuration variables..."
+# Ensure these environment variables are set in your shell or CI/CD environment
+# Or replace with direct values if not using env vars for path/model.
+# CV_DOC_PROCESSOR_PATH="projects/${PROJECT_ID}/locations/us/processors/your-processor-id"
+# CV_VERTEX_MODEL="your-vertex-model-name" # e.g., text-bison@001 or text-bison-32k
+
 firebase functions:config:set \
-     cv.doc_processor_path="projects/${PROJECT_ID}/locations/us/processors/96d0b7dd6d2ee817" \
-     cv.vertex_model="text-bison-32k" \
+     cv.doc_processor_path="${CV_DOC_PROCESSOR_PATH}" \
+     cv.vertex_model="${CV_VERTEX_MODEL}" \
      cv.project_id="${PROJECT_ID}"
      # Note: Vertex model path is simplified to just the model ID if using standard publisher
 
 # Example using full path if needed:
 # firebase functions:config:set \
-#      cv.doc_processor_path="projects/${PROJECT_ID}/locations/us/processors/96d0b7dd6d2ee817" \
+#      cv.doc_processor_path="projects/${PROJECT_ID}/locations/us/processors/your-processor-id" \
 #      cv.vertex_model="projects/${PROJECT_ID}/locations/us-central1/publishers/google/models/text-bison-32k" \
 #      cv.project_id="${PROJECT_ID}"
 
@@ -102,3 +109,9 @@ echo "firebase deploy --only functions,storage" # Deploy all functions and stora
 # Note: Make this script executable with `chmod +x functions/deploy.sh`
 # Run it with `./functions/deploy.sh`
 # It's safe to run this script multiple times (idempotent).
+# Ensure PROJECT_ID, CV_DOC_PROCESSOR_PATH, and CV_VERTEX_MODEL environment variables are set before running.
+# Example: export PROJECT_ID="your-gcp-project-id"
+# Example: export CV_DOC_PROCESSOR_PATH="projects/your-gcp-project-id/locations/us/processors/your-processor-id"
+# Example: export CV_VERTEX_MODEL="text-bison-32k"
+
+```
