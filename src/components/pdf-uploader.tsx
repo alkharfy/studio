@@ -153,13 +153,12 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
       return;
     }
 
-    const fileName = `${Date.now()}_${selectedFile.name}`;
-    const metadata = {
-      customMetadata: { 'requesterUid': currentUser.uid }
-    };
-    const storagePath = `resumes_uploads/${currentUser.uid}/${fileName}`;
+    const storagePath = `resumes_uploads/${currentUser.uid}/${Date.now()}_${selectedFile.name}`;
     console.info(`[PdfUploader] Storage path: ${storagePath}`);
     const storageRef = ref(storage, storagePath);
+    const metadata = {
+      customMetadata: { 'requesterUid': currentUser.uid, 'originalFileName': selectedFile.name }
+    };
 
     console.info("[PdfUploader] Calling uploadBytesResumable...");
     const uploadTask = uploadBytesResumable(storageRef, selectedFile, metadata);
@@ -168,7 +167,7 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
       'state_changed',
       (snapshot) => {
         const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-        setUploadProgress(progress);
+        setUploadProgress(Number(progress.toFixed(2)));
         console.debug(`[PdfUploader] Upload progress: ${progress.toFixed(2)}%`);
       },
       (uploadError: StorageError) => {
@@ -180,6 +179,8 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
           message = 'تم إلغاء عملية الرفع.';
         } else if (uploadError.code === 'storage/object-not-found' && process.env.NEXT_PUBLIC_USE_EMULATOR === 'true') {
             message = 'فشل الرفع (Object Not Found). تأكد أن محاكي Storage يعمل وأن مسار الرفع صحيح.';
+        } else if (uploadError.code === 'storage/retry-limit-exceeded') {
+            message = ' تجاوز الحد الأقصى لمحاولات تحميل الملف. يرجى التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى.';
         }
         setError(message);
         toast({
@@ -289,3 +290,4 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
     </Card>
   );
 }
+
