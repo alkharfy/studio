@@ -22,11 +22,10 @@ const adminStorage = getAdminStorage();
 // Configuration for Vertex AI and Document AI
 const VERTEX_MODEL_ENV = process.env.CV_VERTEX_MODEL;
 const GCP_PROJECT_ID_ENV = process.env.GCLOUD_PROJECT;
-const DOC_PROCESSOR_PATH_ENV = process.env.CV_DOC_PROCESSOR_PATH; // Ensure this matches .env or functions.config
+const DOC_PROCESSOR_PATH_ENV = process.env.CV_DOC_PROCESSOR_PATH;
 
 const gcpProjectId = GCP_PROJECT_ID_ENV || functions.config().cv?.project_id;
 const vertexModelConfig = VERTEX_MODEL_ENV || functions.config().cv?.vertex_model;
-// Corrected to match typical config naming (lowercase)
 const docProcessorPathConfig = DOC_PROCESSOR_PATH_ENV || functions.config().cv?.doc_processor_path || functions.config().cv?.docprocessorpath;
 
 
@@ -112,13 +111,13 @@ export const parseResumePdf = onObjectFinalized(
       return;
     }
     
-    // Manual check for path prefix, as eventFilters for path are not supported in v2 Storage triggers
+    // Manual check for path prefix
     if (!name.startsWith("resumes_uploads/")) {
         functions.logger.info(`File ${name} is not in resumes_uploads/, skipping.`);
         return;
     }
 
-    if (metageneration && parseInt(metageneration.toString(), 10) > 1) { // metageneration can be string or number
+    if (metageneration && parseInt(metageneration.toString(), 10) > 1) { 
         functions.logger.info(`Skipping processing for metadata update (metageneration: ${metageneration}) for file: ${name}`, { eventId });
         return;
     }
@@ -173,7 +172,6 @@ export const parseResumePdf = onObjectFinalized(
           functions.logger.info("📝 Document AI OCR extracted text length:", rawText.length, {name, eventId});
       } catch (docAiError: any) {
           functions.logger.error("🚨 Document AI OCR error:", { errorMessage: docAiError.message, name, eventId, errorObj: docAiError });
-          // Fallback to pdf.js if Document AI fails
           functions.logger.info("Attempting fallback OCR with pdf.js", {name, eventId});
           try {
             const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileContentBuffer) });
