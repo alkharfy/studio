@@ -52,7 +52,7 @@ function CvBuilderPageContent() {
       console.error("[updateFormWithData] Zod validation failed on normalized data for form reset:", error.errors);
       toast({ title: 'خطأ في تحديث النموذج', description: 'البيانات المستلمة غير متوافقة مع النموذج.', variant: 'destructive' });
     }
-  }, [form, currentUser, toast, currentResumeId]); 
+  }, [form, currentUser, toast]); 
 
   const startProcessingTimer = useCallback(() => {
     if (processingTimerRef.current) {
@@ -80,7 +80,7 @@ function CvBuilderPageContent() {
         return newProgress;
       });
     }, intervalTime);
-  }, [processingProgress]); // Added processingProgress to deps
+  }, []);
 
   const stopProcessingTimer = useCallback(() => {
     if (processingTimerRef.current) {
@@ -93,7 +93,7 @@ function CvBuilderPageContent() {
         setIsProcessingPdf(false);
     }
     setProcessingProgress(0);
-  }, [isProcessingPdf]);
+  }, []);
 
 
   const loadInitialCv = useCallback(async (userId: string) => {
@@ -169,7 +169,7 @@ function CvBuilderPageContent() {
       updateFormWithData(null); 
       setIsLoadingCv(false); 
     }
-  }, [currentUser, toast, updateFormWithData, currentResumeId, isLoadingCv]); // Added currentResumeId and isLoadingCv as they affect logic inside
+  }, [currentUser?.uid, toast, updateFormWithData]);
 
   useEffect(() => {
     console.info(`[User/Mount Effect] currentUser?.uid: ${currentUser?.uid}. App's currentResumeId: ${currentResumeId}`);
@@ -186,34 +186,7 @@ function CvBuilderPageContent() {
       processedResumeIdRef.current = null;
       form.reset(normalizeResumeData(null, null)); 
     }
-  }, [currentUser?.uid, loadInitialCv, updateFormWithData, stopProcessingTimer, form, isProcessingPdf, currentResumeId]);
-
-  useEffect(() => {
-    if (!currentUser?.uid) {
-      console.info("[User Listener] No user, skipping setup.");
-      return;
-    }
-    const userDocRef = doc(db, "users", currentUser.uid);
-    console.info(`[User Listener] Setting up for users/${currentUser.uid}. Listening for latestResumeId changes. Current app resumeId: ${currentResumeId}`);
-
-    const unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
-      const latestIdFromFirestore = docSnap.data()?.latestResumeId || null;
-      console.info(`[User Listener] Snapshot received. Firestore latestResumeId: ${latestIdFromFirestore}. App's currentResumeId: ${currentResumeId}`);
-      if (latestIdFromFirestore && latestIdFromFirestore !== currentResumeId) {
-        console.info(`[User Listener] latestResumeId changed from ${currentResumeId} to ${latestIdFromFirestore}. Updating app's currentResumeId. Setting isLoadingCv=true.`);
-        setIsLoadingCv(true); 
-        setCurrentRawResumeData(null); 
-        setCurrentResumeId(latestIdFromFirestore); 
-      }
-    }, (error) => {
-      console.error("[User Listener] Error:", error);
-      toast({ title: "خطأ في مزامنة المستخدم", description: "تعذر تحديث بيانات المستخدم.", variant: "destructive" });
-    });
-    return () => {
-      console.info("[User Listener] Unsubscribing.");
-      unsubscribeUser();
-    };
-  }, [currentUser?.uid, currentResumeId, toast]); 
+  }, [currentUser?.uid, loadInitialCv, updateFormWithData, stopProcessingTimer, form, isProcessingPdf]);
 
   useEffect(() => {
     if (!currentUser?.uid || !currentResumeId) {
@@ -281,7 +254,7 @@ function CvBuilderPageContent() {
       console.info(`[Resume Listener] Unsubscribing from resume: ${currentResumeId}`);
       unsubscribeResume();
     };
-  }, [currentUser?.uid, currentResumeId, toast, updateFormWithData, startProcessingTimer, stopProcessingTimer, isProcessingPdf, currentRawResumeData, isLoadingCv]); 
+  }, [currentUser?.uid, toast, updateFormWithData, startProcessingTimer, stopProcessingTimer, isProcessingPdf, currentRawResumeData, currentUser, currentResumeId]); 
 
 
   const currentFormData = form.watch();
@@ -398,3 +371,4 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
+
