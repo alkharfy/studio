@@ -6,7 +6,7 @@ export interface UserProfile {
   email: string | null;
   displayName: string | null;
   createdAt: Timestamp;
-  // Add other user profile fields as needed
+  latestResumeId?: string | null; // To track the most recent resume
 }
 
 // Structure aligning with Firestore data written by the updated Cloud Function
@@ -46,16 +46,16 @@ export interface Resume {
     description?: string | null;
   }[] | null;
 
-   skills?: { // Skills are now an array of objects
+   skills?: { 
        name?: string | null;
    }[] | null;
 
    languages?: {
        name?: string | null;
-       level?: string | null; // Level can be optional
+       level?: string | null; 
    }[] | null;
 
-   hobbies?: string[] | null; // Hobbies are a simple array of strings
+   hobbies?: string[] | null; 
 
    customSections?: {
      title?: string | null;
@@ -65,6 +65,7 @@ export interface Resume {
   // --- Metadata ---
   parsingDone?: boolean;
   parsingError?: string | null;
+  rawAiOutput?: string | null; // For debugging AI response
   originalFileName?: string | null;
   storagePath?: string | null;
   // Fields from form not directly from parsing, but part of resume document
@@ -74,3 +75,4 @@ export interface Resume {
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
+

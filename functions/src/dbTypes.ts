@@ -5,6 +5,15 @@
 
 import type { Timestamp } from 'firebase-admin/firestore'; // Use firebase-admin Timestamp
 
+export interface UserProfile {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  createdAt: Timestamp;
+  latestResumeId?: string | null; 
+}
+
+
 export interface Resume {
   resumeId: string;
   userId: string;
@@ -18,7 +27,7 @@ export interface Resume {
     jobTitle?: string | null;
   } | null;
   summary?: string | null;
-  objective?: string | null; // Kept for potential backward compatibility
+  objective?: string | null; 
 
   education?: {
     degree?: string | null;
@@ -59,11 +68,14 @@ export interface Resume {
   // --- Metadata ---
   parsingDone?: boolean;
   parsingError?: string | null;
+  rawAiOutput?: string | null; // For debugging AI response
   originalFileName?: string | null;
   storagePath?: string | null;
   yearsExperience?: number | null;
   jobDescriptionForAI?: string | null;
+  extractedData?: any | null; // To store raw AI output if needed for debugging parsing errors
 
-  createdAt: Timestamp; // Firestore Server Timestamp
-  updatedAt: Timestamp; // Firestore Server Timestamp
+  createdAt: Timestamp; 
+  updatedAt: Timestamp; 
 }
+

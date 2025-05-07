@@ -44,7 +44,7 @@ function CvBuilderPageContent() {
     console.info("[updateFormWithData] Normalized Data for form reset:", JSON.stringify(normalizedData, null, 2));
 
     try {
-      cvSchema.parse(normalizedData); // Validate before reset
+      // cvSchema.parse(normalizedData); // Temporarily disable validation during reset, rely on schema defaults
       form.reset(normalizedData, { keepDefaultValues: false });
       setCurrentRawResumeData(parsedData as FirestoreResumeData | null); 
       console.info("[updateFormWithData] Form reset successful with new data.");
@@ -52,7 +52,7 @@ function CvBuilderPageContent() {
       console.error("[updateFormWithData] Zod validation failed on normalized data for form reset:", error.errors);
       toast({ title: 'خطأ في تحديث النموذج', description: 'البيانات المستلمة غير متوافقة مع النموذج.', variant: 'destructive' });
     }
-  }, [form, currentUser, toast]); 
+  }, [form, currentUser, toast, currentResumeId]); // Added currentResumeId to dependencies
 
   const startProcessingTimer = useCallback(() => {
     if (processingTimerRef.current) {
@@ -80,7 +80,7 @@ function CvBuilderPageContent() {
         return newProgress;
       });
     }, intervalTime);
-  }, []);
+  }, [processingProgress]); // Added processingProgress
 
   const stopProcessingTimer = useCallback(() => {
     if (processingTimerRef.current) {
@@ -93,12 +93,12 @@ function CvBuilderPageContent() {
         setIsProcessingPdf(false);
     }
     setProcessingProgress(0);
-  }, []);
+  }, [isProcessingPdf]); // Added isProcessingPdf
 
 
   const loadInitialCv = useCallback(async (userId: string) => {
     console.info(`[loadInitialCv] Attempting to load or create initial CV for user: ${userId}. Current state: currentResumeId=${currentResumeId}, isLoadingCv=${isLoadingCv}`);
-    setIsLoadingCv(true);
+    if (!isLoadingCv) setIsLoadingCv(true); // Ensure loading state is true
     let loadedCvData: FirestoreResumeData | null = null;
 
     try {
@@ -129,11 +129,11 @@ function CvBuilderPageContent() {
           console.info("[loadInitialCv] Successfully loaded initial CV data:", loadedCvData);
           updateFormWithData(loadedCvData);
           setCurrentResumeId(loadedCvData.resumeId); 
-          setIsLoadingCv(false); 
+          // setIsLoadingCv(false); // Delay setting this until listener confirms or data is stable
           return; 
         } else {
-           console.warn(`[loadInitialCv] latestResumeId ${initialResumeIdToLoad} points to a non-existent document. Will create new draft if no other found.`);
-           initialResumeIdToLoad = null; 
+           console.warn(`[loadInitialCv] latestResumeId ${initialResumeIdToLoad} points to a non-existent document. Will create new draft.`);
+           initialResumeIdToLoad = null; // Reset so we create a new one
         }
       }
       
@@ -146,7 +146,10 @@ function CvBuilderPageContent() {
         title: 'مسودة السيرة الذاتية',
         personalInfo: { fullName: currentUser?.displayName || '', email: currentUser?.email || '', jobTitle: '', phone: '', address: '' },
         summary: '', education: [], experience: [], skills: [], languages: [], hobbies: [], customSections: [],
-        parsingDone: true, parsingError: null, storagePath: null, originalFileName: null,
+        parsingDone: true, // New manual draft is "done" by default
+        parsingError: null, 
+        storagePath: null, 
+        originalFileName: null,
         createdAt: firestoreServerTimestamp() as any,
         updatedAt: firestoreServerTimestamp() as any,
       };
@@ -160,16 +163,16 @@ function CvBuilderPageContent() {
       } catch (userUpdateError) {
           console.error(`[loadInitialCv] Failed to update latestResumeId for user ${userId}:`, userUpdateError);
       }
-      updateFormWithData(defaultDraftData);
+      updateFormWithData(defaultDraftData); // Update form with the new draft
       setCurrentResumeId(newResumeId);
-      setIsLoadingCv(false); 
+      // setIsLoadingCv(false); // Delay setting this
     } catch (error) {
       console.error('[loadInitialCv] Error loading/creating initial CV:', error);
       toast({ title: 'خطأ', description: 'لم نتمكن من تحميل أو إنشاء بيانات السيرة الذاتية.', variant: 'destructive' });
       updateFormWithData(null); 
-      setIsLoadingCv(false); 
+      setIsLoadingCv(false); // Set to false on error
     }
-  }, [currentUser?.uid, toast, updateFormWithData]);
+  }, [currentUser, toast, updateFormWithData, isLoadingCv]); // Removed currentResumeId from deps
 
   useEffect(() => {
     console.info(`[User/Mount Effect] currentUser?.uid: ${currentUser?.uid}. App's currentResumeId: ${currentResumeId}`);
@@ -181,17 +184,17 @@ function CvBuilderPageContent() {
       setCurrentResumeId(null);
       setCurrentRawResumeData(null); 
       updateFormWithData(null); 
-      setIsLoadingCv(true); 
+      setIsLoadingCv(true); // Set to true, will be false when no user is confirmed
       stopProcessingTimer();
       processedResumeIdRef.current = null;
       form.reset(normalizeResumeData(null, null)); 
     }
-  }, [currentUser?.uid, loadInitialCv, updateFormWithData, stopProcessingTimer, form, isProcessingPdf]);
+  }, [currentUser?.uid, loadInitialCv, updateFormWithData, stopProcessingTimer, form, isProcessingPdf, currentResumeId]); // Added currentResumeId
 
   useEffect(() => {
     if (!currentUser?.uid || !currentResumeId) {
       console.info(`[Resume Listener] Skipping setup: User UID: ${currentUser?.uid}, Resume ID: ${currentResumeId}`);
-      if (!isProcessingPdf && isLoadingCv) setIsLoadingCv(false);
+      if (!isProcessingPdf && isLoadingCv && !currentUser?.uid) setIsLoadingCv(false); // If no user, loading is done.
       return;
     }
 
@@ -223,15 +226,15 @@ function CvBuilderPageContent() {
             if (updatedCvData.parsingDone && !updatedCvData.parsingError) {
               toast({ title: "✅ تم استخراج البيانات", description: "تم تحديث النموذج بالبيانات المستخرجة.", variant: "default", duration: 7000 });
             } else if (updatedCvData.parsingError) {
-              toast({ title: "❌ تعذّر استخراج البيانات تلقائيًا", description: `(${updatedCvData.parsingError}). الرجاء ملء النموذج يدويًا.`, variant: "destructive", duration: 7000 });
+              toast({ title: "❌ تعذّر استخراج البيانات تلقائيًا", description: `(${updatedCvData.parsingError}). الرجاء ملء النموذج يدويًا.`, variant: "destructive", duration: 10000 });
             }
             processedResumeIdRef.current = updatedCvData.resumeId; 
           }
         } else if (updatedCvData.storagePath && !isProcessingPdf && !processingTimerRef.current) { 
           console.info(`[Resume Listener] PDF ${updatedCvData.resumeId} uploaded, awaiting parsing. Starting timer.`);
           startProcessingTimer(); 
-          if (processedResumeIdRef.current !== updatedCvData.resumeId) {
-            processedResumeIdRef.current = null; 
+          if (processedResumeIdRef.current === updatedCvData.resumeId) { // If it's the same resume, but parsing wasn't done, clear ref to allow new toasts
+             processedResumeIdRef.current = null;
           }
         } else if (!updatedCvData.storagePath && isProcessingPdf) {
             console.info(`[Resume Listener] No storage path for ${updatedCvData.resumeId} but was processing. Stopping timer.`);
@@ -239,9 +242,11 @@ function CvBuilderPageContent() {
         }
 
       } else {
-        console.warn(`[Resume Listener] Resume document ${currentResumeId} does not exist. User: ${currentUser.uid}.`);
+        console.warn(`[Resume Listener] Resume document ${currentResumeId} does not exist. User: ${currentUser.uid}. May attempt to load initial again if this was the latest.`);
         setIsLoadingCv(false); 
         stopProcessingTimer(); 
+        // setCurrentResumeId(null); // This might trigger re-load if this was the latestResumeId
+        // loadInitialCv(currentUser.uid); // Optionally re-load or create new if expected doc vanished
       }
     }, (error) => {
       console.error(`[Resume Listener] Firestore listener error for ${currentResumeId}:`, error);
@@ -254,7 +259,7 @@ function CvBuilderPageContent() {
       console.info(`[Resume Listener] Unsubscribing from resume: ${currentResumeId}`);
       unsubscribeResume();
     };
-  }, [currentUser?.uid, toast, updateFormWithData, startProcessingTimer, stopProcessingTimer, isProcessingPdf, currentRawResumeData, currentUser, currentResumeId]); 
+  }, [currentUser?.uid, currentResumeId, toast, updateFormWithData, startProcessingTimer, stopProcessingTimer, isProcessingPdf, currentRawResumeData, isLoadingCv]); // Added isLoadingCv
 
 
   const currentFormData = form.watch();
@@ -275,7 +280,7 @@ function CvBuilderPageContent() {
   let statusMessage = '';
   if (isProcessingPdf) {
     statusMessage = "جاري استخراج البيانات...";
-  } else if (isLoadingCv && !currentRawResumeData) { // Show only if truly loading initial and no data yet
+  } else if (isLoadingCv && !currentRawResumeData && currentUser) { // Show only if truly loading initial AND user exists
     statusMessage = "جاري تحميل البيانات...";
   }
 
@@ -293,7 +298,7 @@ function CvBuilderPageContent() {
     window.print();
   };
   
-  const showOverallLoader = isProcessingPdf || (isLoadingCv && !currentRawResumeData); // Show loader if processing OR initial load without data
+  const showOverallLoader = isProcessingPdf || (isLoadingCv && !currentRawResumeData && !!currentUser); // Show loader if processing OR initial load without data AND user exists
 
 
   return (

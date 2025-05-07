@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import type { CloudEvent } from "firebase-functions/v2";
 import { onObjectFinalized, type StorageObjectData } from "firebase-functions/v2/storage";
 import { initializeApp, getApps as getAdminApps } from "firebase-admin/app";
-import { getFirestore, FieldValue, setDoc as firestoreSetDoc, doc as firestoreDoc, serverTimestamp as firestoreServerTimestamp } from "firebase-admin/firestore";
+import { getFirestore, FieldValue, setDoc as firestoreSetDoc, doc as firestoreDoc, serverTimestamp as firestoreServerTimestamp, updateDoc as firestoreUpdateDoc } from "firebase-admin/firestore";
 import { getStorage as getAdminStorage } from "firebase-admin/storage";
 import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
 import { VertexAI, type Content, type Part } from "@google-cloud/vertexai";
@@ -46,7 +46,7 @@ if (docProcessorPathConfig && vertexModelConfig && gcpProjectId) {
   functionsLogger.error("Critical: Document AI processor path, Vertex AI model, or GCP Project ID is not configured. Check environment variables (CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL, GCLOUD_PROJECT) or Firebase functions.config().", {
     hasDocPath: !!docProcessorPathConfig,
     hasVertexModel: !!vertexModelConfig,
-    hasProjectId: !!gcpProjectId
+    hasGcpProjectId: !!gcpProjectId // Corrected key
   });
 }
 
@@ -67,7 +67,7 @@ export const parseResumePdf = onObjectFinalized(
   {
     region: "us-central1",
     bucket: bucketToListen || AppSpotBucket!, // Fallback to AppSpotBucket if bucketToListen is somehow undefined (should not happen if GCLOUD_PROJECT is set)
-    eventFilters: { name: "resumes_uploads/**" }, // Corrected key to 'name' for path prefix
+    eventFilters: { name: "resumes_uploads/**" }, 
     memory: "1GiB",
     timeoutSeconds: 540,
     cpu: 1,
@@ -103,8 +103,16 @@ export const parseResumePdf = onObjectFinalized(
     const fileName = name.split("/").pop()!;
     const tempFilePath = `/tmp/${fileName}`;
 
-    if (!docaiClient || !generativeModel || !docProcessorPathConfig) {
-      functionsLogger.error("Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf.", { name, eventId: event.id });
+    if (!docaiClient || !generativeModel || !docProcessorPathConfig || !vertexModelConfig || !gcpProjectId) {
+      functionsLogger.error("Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf.", { 
+        name, 
+        eventId: event.id,
+        hasDocClient: !!docaiClient,
+        hasGenModel: !!generativeModel,
+        hasDocPathConfig: !!docProcessorPathConfig,
+        hasVertexModelConfig: !!vertexModelConfig,
+        hasGcpProjectId: !!gcpProjectId
+      });
       const errorResumeId = Date.now().toString();
       try {
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
@@ -113,6 +121,8 @@ export const parseResumePdf = onObjectFinalized(
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
+            resumeId: errorResumeId, // Add resumeId
+            userId: uid, // Add userId
         });
       } catch (dbError) {
           functionsLogger.error("Failed to write config error to Firestore", { dbError, uid, errorResumeId, eventId: event.id });
@@ -144,6 +154,7 @@ export const parseResumePdf = onObjectFinalized(
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
+            resumeId: errorResumeId, userId: uid,
         });
         return;
       }
@@ -221,6 +232,7 @@ export const parseResumePdf = onObjectFinalized(
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
+            resumeId: errorResumeId, userId: uid,
         });
         return;
       }
@@ -238,6 +250,7 @@ export const parseResumePdf = onObjectFinalized(
           originalFileName: fileName,
           createdAt: firestoreServerTimestamp(),
           updatedAt: firestoreServerTimestamp(),
+          resumeId: errorResumeId, userId: uid,
         });
         return;
       }
@@ -248,17 +261,20 @@ export const parseResumePdf = onObjectFinalized(
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ai_output_missing_fullname",
-            extractedData: extractedData,
+            extractedData: extractedData, // Store what was extracted for debugging
             storagePath: name,
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
+            resumeId: errorResumeId, userId: uid,
         });
         return;
       }
 
       const resumeId = Date.now().toString();
       const resumeDocRef = firestoreDoc(db, "users", uid, "resumes", resumeId);
+      functionsLogger.info(`Attempting to write to Firestore path: users/${uid}/resumes/${resumeId}`, { eventId: event.id });
+
 
       const finalResumeData: FirestoreResumeData = {
         resumeId: resumeId,
@@ -295,22 +311,23 @@ export const parseResumePdf = onObjectFinalized(
         parsingError: null,
         storagePath: name,
         originalFileName: fileName,
-        createdAt: firestoreServerTimestamp() as any, // Cast for FieldValue
-        updatedAt: firestoreServerTimestamp() as any, // Cast for FieldValue
+        createdAt: firestoreServerTimestamp() as any, 
+        updatedAt: firestoreServerTimestamp() as any, 
       };
 
       await firestoreSetDoc(resumeDocRef, finalResumeData);
-      functionsLogger.log(`✅ Successfully wrote resume to users/${uid}/resumes/${resumeId}`, { name, eventId: event.id });
+      functionsLogger.log(`✅ Successfully wrote resume to users/${uid}/resumes/${resumeId}`, { name, eventId: event.id, firestorePath: resumeDocRef.path });
 
       try {
-        await adminStorage.bucket(bucket).file(name).setMetadata({ metadata: { resumeId: resumeId, parsingStatus: 'completed' } });
+        await adminStorage.bucket(bucket).file(name).setMetadata({ metadata: { resumeId: resumeId, parsingStatus: 'completed', firestorePath: resumeDocRef.path } });
         functionsLogger.log("✅ Set metadata on storage object:", name, { resumeId, eventId: event.id });
       } catch (metaError: any) {
         functionsLogger.error("🚨 Error setting metadata on storage object:", metaError.message, { name, metaErrorObj: metaError, eventId: event.id });
       }
 
       try {
-        await firestoreSetDoc(firestoreDoc(db, "users", uid), { latestResumeId: resumeId, updatedAt: firestoreServerTimestamp() }, { merge: true });
+        const userDocRef = firestoreDoc(db, "users", uid);
+        await firestoreUpdateDoc(userDocRef, { latestResumeId: resumeId, updatedAt: firestoreServerTimestamp() });
         functionsLogger.log("✅ Updated latestResumeId for user:", uid, { resumeId, eventId: event.id });
       } catch (userUpdateError: any) {
          functionsLogger.error("🚨 Error updating latestResumeId for user:", userUpdateError.message, { uid, resumeId, userUpdateErrorObj: userUpdateError, eventId: event.id });
@@ -326,6 +343,7 @@ export const parseResumePdf = onObjectFinalized(
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
+            resumeId: errorResumeId, userId: uid,
         });
       } catch (dbError) {
           functionsLogger.error("Failed to write unhandled error to Firestore", { dbError, uid, errorResumeId, eventId: event.id });
@@ -437,3 +455,4 @@ export const suggestSkills = onCall(
     throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
   }
 });
+
