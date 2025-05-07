@@ -22,16 +22,22 @@ const adminStorage = getAdminStorage();
 
 // Configuration for Vertex AI
 const VERTEX_MODEL_ENV = process.env.CV_VERTEX_MODEL;
-const GCP_PROJECT_ID_ENV = process.env.GCLOUD_PROJECT;
+const GCP_PROJECT_ID_ENV = process.env.GCLOUD_PROJECT; // Standard env var for GCP project ID
+const DOC_PROCESSOR_PATH_ENV = process.env.CV_DOC_PROCESSOR_PATH;
+
 
 const gcpProjectId = GCP_PROJECT_ID_ENV || functions.config().cv?.project_id;
 const vertexModelConfig = VERTEX_MODEL_ENV || functions.config().cv?.vertex_model;
+const docProcessorPathConfig = DOC_PROCESSOR_PATH_ENV || functions.config().cv?.doc_processor_path;
+
 
 functions.logger.info("Initial Configuration Check:", {
     vertexModelConfigValue: vertexModelConfig,
     gcpProjectIdValue: gcpProjectId,
+    docProcessorPathConfigValue: docProcessorPathConfig,
     VERTEX_MODEL_ENV,
     GCP_PROJECT_ID_ENV,
+    DOC_PROCESSOR_PATH_ENV,
     firebaseFunctionsConfigCV: functions.config().cv,
 });
 
@@ -58,7 +64,7 @@ if (vertexModelConfig && gcpProjectId) {
 }
 
 // Determine the correct bucket name based on environment
-const bucketNameToListen = process.env.FUNCTIONS_EMULATOR === 'true' 
+const bucketNameToListen = process.env.FUNCTIONS_EMULATOR === 'true'
     ? 'default-bucket' // Default bucket for Firebase Storage Emulator
     : gcpProjectId ? `${gcpProjectId}.appspot.com` : undefined;
 
@@ -85,8 +91,18 @@ export const parseResumePdf = functions
       functions.logger.warn("Object name is undefined, exiting.", { eventId });
       return;
     }
+
+    // Check for metageneration to avoid infinite loops from updates by the function itself
+    // This check might be too aggressive if metadata updates are legitimate triggers for some workflows,
+    // but for PDF parsing, we typically only want to run on initial upload or significant content changes.
+    if (metageneration && parseInt(metageneration, 10) > 1) {
+        functions.logger.info(`Skipping processing for metadata update (metageneration: ${metageneration}) for file: ${name}`, { eventId });
+        return;
+    }
     
-    // Check if file is in the correct path (v1 doesn't have eventFilters like v2)
+    // Check if file is in the correct path (v1 doesn't have eventFilters like v2 Storage)
+    // However, the `object()` trigger in v1 listens to all objects in the specified bucket.
+    // We must filter by path prefix inside the function.
     if (!name.startsWith("resumes_uploads/")) {
         functions.logger.info(`File ${name} is not in resumes_uploads/, skipping.`);
         return;
@@ -103,55 +119,54 @@ export const parseResumePdf = functions
 
     const fileName = pathParts[pathParts.length -1]; // Get the actual file name
 
-    // Check if Vertex AI is configured
-    if (!generativeModel || !vertexModelConfig || !gcpProjectId) {
-      functions.logger.error("CRITICAL: Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf for file.", { 
-        fileName, 
+    // Check if Vertex AI and Document AI are configured
+    if (!generativeModel || !vertexModelConfig || !gcpProjectId || !docProcessorPathConfig) {
+      functions.logger.error("CRITICAL: Vertex AI or Document AI services not initialized due to missing configuration. Aborting parseResumePdf for file.", {
+        fileName,
         uid,
         eventId,
         hasGenModel: !!generativeModel,
         hasVertexModelConfig: !!vertexModelConfig,
+        hasDocProcessorPathConfig: !!docProcessorPathConfig,
         hasGcpProjectId: !!gcpProjectId
       });
       const errorResumeId = Date.now().toString();
       try {
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: "config_error_vertex_not_initialized",
+            parsingError: "config_error_services_not_initialized",
             storagePath: name,
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
-            resumeId: errorResumeId, 
-            userId: uid, 
+            resumeId: errorResumeId,
+            userId: uid,
         });
       } catch (dbError: any) {
-          functions.logger.error("Failed to write config_error_vertex_not_initialized to Firestore", { dbErrorMessage: dbError.message, uid, errorResumeId, eventId });
+          functions.logger.error("Failed to write config_error_services_not_initialized to Firestore", { dbErrorMessage: dbError.message, uid, errorResumeId, eventId });
       }
       return;
     }
-    
+
     functions.logger.info("Using Vertex AI Model:", { model: vertexModelConfig });
+    functions.logger.info("Using Document AI Processor Path:", { processor: docProcessorPathConfig });
+
 
     const tempFilePath = `/tmp/${fileName.replace(/\//g, '_')}`; // Ensure fileName is safe for tmp path
 
     try {
       functions.logger.info(`Attempting to download ${name} from bucket ${bucket}`, { eventId });
-      
-      // Download file content (using adminStorage, which is already initialized)
-      // The v1 object passed to onFinalize doesn't have a download method.
-      // We need to use the adminStorage client.
       await adminStorage.bucket(bucket).file(name).download({ destination: tempFilePath });
       functions.logger.info(`📄 File downloaded to ${tempFilePath}`, { name, eventId });
-      
-      const fileContent = fs.readFileSync(tempFilePath); // Read from temp file
+
+      const fileContentBuffer = fs.readFileSync(tempFilePath); // Read from temp file as buffer
 
       let rawText = "";
+      // Try pdf.js first for local text extraction (fallback or primary if Document AI fails/not configured fully)
       try {
-        // Use pdf.js to extract text
-        const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileContent) }); 
+        const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileContentBuffer) });
         const pdfDocument = await loadingTask.promise;
-        functions.logger.info(`Number of pages: ${pdfDocument.numPages}`, { name, eventId });
-        
+        functions.logger.info(`pdf.js: Number of pages: ${pdfDocument.numPages}`, { name, eventId });
+
         for (let i = 1; i <= pdfDocument.numPages; i++) {
             const page = await pdfDocument.getPage(i);
             const textContent = await page.getTextContent();
@@ -160,27 +175,45 @@ export const parseResumePdf = functions
         functions.logger.info(`📝 pdf.js extracted text length: ${rawText.length}`, { name, eventId });
 
       } catch (pdfJsError: any) {
-        functions.logger.error("🚨 pdf.js text extraction error:", { errorMessage: pdfJsError.message, name, eventId, errorObj: pdfJsError });
-        const errorResumeId = Date.now().toString();
-        await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: `pdfjs_extraction_error: ${pdfJsError.message.substring(0,100)}`, 
-            storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
-        });
-        return; 
+        functions.logger.warn("⚠️ pdf.js text extraction failed. Will proceed if Document AI is primary. If Document AI also fails, this will be an issue.", { errorMessage: pdfJsError.message, name, eventId });
+        // Do not return here if Document AI is the primary method, let it try.
+        // If pdf.js is the primary, then an error should be recorded.
+      }
+
+      // If pdf.js didn't yield text, or if Document AI is preferred, use Document AI
+      if (!rawText.trim()) {
+          functions.logger.info("pdf.js yielded no text or Document AI is preferred. Attempting Document AI OCR.", {name, eventId});
+          try {
+              const docAIClient = new functions.google.documentai.v1.DocumentProcessorServiceClient();
+              const [docAiResult] = await docAIClient.processDocument({
+                  name: docProcessorPathConfig, // Use the configured processor path
+                  rawDocument: { content: fileContentBuffer, mimeType: "application/pdf" },
+              });
+              rawText = docAiResult.document?.text ?? "";
+              functions.logger.info("📝 Document AI OCR extracted text length:", rawText.length, {name, eventId});
+          } catch (docAiError: any) {
+              functions.logger.error("🚨 Document AI OCR error:", { errorMessage: docAiError.message, name, eventId, errorObj: docAiError });
+              const errorResumeId = Date.now().toString();
+              await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
+                  parsingError: `doc_ai_ocr_error: ${docAiError.message.substring(0,100)}`,
+                  storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
+              });
+              return;
+          }
       }
 
 
       if (!rawText.trim()) {
-        functions.logger.warn("pdf.js extraction result is empty. Writing parsingError to Firestore.", { name, eventId });
+        functions.logger.warn("OCR result is empty (from both pdf.js and Document AI). Writing parsingError to Firestore.", { name, eventId });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: "pdfjs_empty_result",
+            parsingError: "ocr_empty_result",
             storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
-        return; 
+        return;
       }
 
-      const textSnippet = rawText.slice(0, 15000); 
+      const textSnippet = rawText.slice(0, 15000);
       functions.logger.info(`Using text snippet for Vertex AI (length: ${textSnippet.length})`, { eventId });
 
       const prompt = `
@@ -193,12 +226,12 @@ export const parseResumePdf = functions
             fullName: string, email: string,
             phone: string, address: string, jobTitle: string
           },
-          summary: string, 
-          education: { degree: string, institution: string, graduationYear: string, details?: string }[], 
-          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[], 
-          skills: { name: string }[], 
+          summary: string,
+          education: { degree: string, institution: string, graduationYear: string, details?: string }[],
+          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[],
+          skills: { name: string }[],
           languages: { name: string, level?: string }[],
-          hobbies?: string[] 
+          hobbies?: string[]
         }
 
         –––––––––––––––––––––––––––––––––
@@ -248,7 +281,7 @@ export const parseResumePdf = functions
          functions.logger.error("🚨 Vertex AI processing error:", { errorMessage: vertexError.message, errorDetails: vertexError.details, code: vertexError.code, name, eventId });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: `vertex_ai_error: ${vertexError.code || 'UNKNOWN'} - ${vertexError.message.substring(0,100)}`, 
+            parsingError: `vertex_ai_error: ${vertexError.code || 'UNKNOWN'} - ${vertexError.message.substring(0,100)}`,
             storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
         return;
@@ -277,33 +310,33 @@ export const parseResumePdf = functions
         functions.logger.error("🚨 Failed to parse JSON from Vertex AI:", { errorMessage: e.message, rawString: jsonString, name, eventId });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-          parsingError: `vertex_json_parse_error: ${e.message.substring(0, 100)}`, 
-          rawAiOutput: jsonString.substring(0, 1000), 
+          parsingError: `vertex_json_parse_error: ${e.message.substring(0, 100)}`,
+          rawAiOutput: jsonString.substring(0, 1000),
           storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
-        return; 
+        return;
       }
-      
+
 
       if (!extractedData.personalInfo?.fullName) {
         functions.logger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.", { name, extractedData, eventId });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ai_output_missing_fullname",
-            extractedData: extractedData, 
+            extractedData: extractedData,
             storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
         return;
       }
 
-      const resumeId = Date.now().toString(); 
+      const resumeId = Date.now().toString();
       const resumeDocRef = firestoreDoc(db, "users", uid, "resumes", resumeId);
       functions.logger.info(`Attempting to write to Firestore path: users/${uid}/resumes/${resumeId}`, { eventId });
 
       const finalResumeData: FirestoreResumeData = {
-        resumeId: resumeId, 
-        userId: uid, 
-        title: extractedData.title || fileName, 
+        resumeId: resumeId,
+        userId: uid,
+        title: extractedData.title || fileName,
         personalInfo: {
             fullName: extractedData.personalInfo?.fullName || null,
             email: extractedData.personalInfo?.email || null,
@@ -311,33 +344,33 @@ export const parseResumePdf = functions
             address: extractedData.personalInfo?.address || null,
             jobTitle: extractedData.personalInfo?.jobTitle || null,
         },
-        summary: extractedData.summary || extractedData.objective || null, 
+        summary: extractedData.summary || extractedData.objective || null,
         education: (extractedData.education || []).map((edu: any) => ({
             degree: edu.degree || null,
-            institution: edu.institution || edu.institute || null, 
-            graduationYear: edu.graduationYear || edu.year || null, 
+            institution: edu.institution || edu.institute || null,
+            graduationYear: edu.graduationYear || edu.year || null,
             details: edu.details || null,
         })),
         experience: (extractedData.experience || []).map((exp: any) => ({
-            jobTitle: exp.jobTitle || exp.title || null, 
+            jobTitle: exp.jobTitle || exp.title || null,
             company: exp.company || null,
-            startDate: exp.startDate || exp.start || null, 
+            startDate: exp.startDate || exp.start || null,
             endDate: exp.endDate || exp.end || null,
             description: exp.description || null,
         })),
-        skills: (extractedData.skills || []).map((skill: any) => ({ 
+        skills: (extractedData.skills || []).map((skill: any) => ({
             name: typeof skill === 'string' ? skill : (skill?.name || null)
-        })).filter((s: any) => s.name), 
+        })).filter((s: any) => s.name),
         languages: extractedData.languages || [],
         hobbies: extractedData.hobbies || [],
-        customSections: extractedData.customSections || [], 
+        customSections: extractedData.customSections || [],
         parsingDone: true,
-        parsingError: null, 
-        rawAiOutput: jsonString.substring(0,1000), 
+        parsingError: null,
+        rawAiOutput: jsonString.substring(0,1000),
         storagePath: name,
-        originalFileName: fileName, 
-        createdAt: firestoreServerTimestamp() as any, 
-        updatedAt: firestoreServerTimestamp() as any, 
+        originalFileName: fileName,
+        createdAt: firestoreServerTimestamp() as any,
+        updatedAt: firestoreServerTimestamp() as any,
       };
 
       await firestoreSetDoc(resumeDocRef, finalResumeData);
@@ -349,7 +382,7 @@ export const parseResumePdf = functions
       } catch (metaError: any) {
         functions.logger.error("🚨 Error setting metadata on storage object:", { name, errorMessage: metaError.message, metaErrorObj: metaError, eventId });
       }
-      
+
       try {
         const userDocRef = firestoreDoc(db, "users", uid);
         await firestoreUpdateDoc(userDocRef, { latestResumeId: resumeId, updatedAt: firestoreServerTimestamp() });
@@ -364,7 +397,7 @@ export const parseResumePdf = functions
       const errorResumeId = Date.now().toString();
       try {
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: `unknown_function_error: ${error.message.substring(0, 100)}`, 
+            parsingError: `unknown_function_error: ${error.message.substring(0, 100)}`,
             storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
       } catch (dbError: any) {
@@ -459,12 +492,12 @@ export const suggestSkills = functions
   try {
     const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
     const responseContent: Content | null = aiResponse.response.candidates?.[0]?.content ?? null;
-    let skillsJsonString = "[]"; 
-    
+    let skillsJsonString = "[]";
+
     if (responseContent?.parts?.[0] && 'text' in responseContent.parts[0]) {
         skillsJsonString = responseContent.parts[0].text || "[]";
      }
-    
+
     functions.logger.info("💡 suggestSkills AI raw response:", { jobTitle, skillsJsonString, uid: context.auth.uid });
 
     let suggestedSkills: string[] = [];
@@ -485,9 +518,10 @@ export const suggestSkills = functions
     }
 
     functions.logger.info("💡 suggestSkills processed skills:", { jobTitle, skills: suggestedSkills.slice(0, max), uid: context.auth.uid });
-    return { skills: suggestedSkills.slice(0, max) }; 
+    return { skills: suggestedSkills.slice(0, max) };
   } catch (error: any) {
     functions.logger.error("🚨 Error in suggestSkills:", { errorMessage: error.message, jobTitle, errorObj: error, uid: context.auth.uid });
     throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
   }
 });
+
