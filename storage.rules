@@ -2,24 +2,16 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    // Allow public read access to a 'public' folder if needed
-    // match /public/{allPaths=**} {
-    //   allow read;
-    // }
-
-    // Allow authenticated users to read and write their own files in resumes_uploads/{userId}/
+    // Match files in the resumes_uploads directory, segmented by user ID
     match /resumes_uploads/{userId}/{allPaths=**} {
+      // Allow read and write access only if the requesting user's ID matches the {userId} in the path
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Example: Allow authenticated users to read and write their own files in a 'user_files' folder
-    // match /user_files/{userId}/{allPaths=**} {
-    //   allow read, write: if request.auth != null && request.auth.uid == userId;
-    // }
-
-    // Default deny all other access
-    // match /{allPaths=**} {
-    //   allow read, write: if false;
+    // You might want a more general rule for other paths, or keep it restrictive
+    // Example: Allow public read for a 'public_assets' folder
+    // match /public_assets/{allPaths=**} {
+    //   allow read;
     // }
   }
 }
