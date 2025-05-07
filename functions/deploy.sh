@@ -12,29 +12,28 @@ if [ -z "$PROJECT_ID" ]; then
 fi
 
 # Default Functions service account (used by v1 and v2 HTTP/Callable)
-# For v2 event-driven functions (like Storage), it's usually PROJECT_NUMBER-compute@developer.gserviceaccount.com
-# but granting to the default SA often works or simplifies setup. Double-check in IAM if needed.
+# For v2 event-driven functions, this is the RUNTIME service account.
 FUNCTIONS_SERVICE_ACCOUNT="${PROJECT_ID}@appspot.gserviceaccount.com"
 
-# Get Project Number (needed for some default service accounts if used)
-# PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
-# EVENT_DRIVEN_FUNCTIONS_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" # Example if needed
-
+# Get Project Number (needed for some default service accounts like Eventarc's own SA)
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+# EVENTARC_SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-eventarc.iam.gserviceaccount.com" # Eventarc's own service agent
 
 # --- End Configuration ---
 
 echo "--- Granting IAM Roles ---"
 echo "Project ID: ${PROJECT_ID}"
-echo "Functions Service Account: ${FUNCTIONS_SERVICE_ACCOUNT}"
+echo "Functions Runtime Service Account: ${FUNCTIONS_SERVICE_ACCOUNT}"
+# echo "Eventarc Service Agent: ${EVENTARC_SERVICE_AGENT}" # For reference
 echo "--------------------------"
 
 
-# Grant roles required by parseResumePdf function to the default service account
+# Grant roles required by parseResumePdf function to the function's runtime service account
 echo "Granting roles/documentai.apiUser..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
   --role="roles/documentai.apiUser" \
-  --condition=None # Explicitly set no condition for clarity
+  --condition=None
 
 echo "Granting roles/aiplatform.user..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
@@ -46,35 +45,32 @@ echo "Granting roles/datastore.user (for Firestore)..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
   --role="roles/datastore.user" \
-  --condition=None # Corrected: Ensure no condition is explicitly stated if not needed, or specify a valid one.
+  --condition=None
 
-# Grant Storage Admin role to allow the function to read from the bucket
-# and potentially write metadata or processed files.
-# For stricter permissions, use roles/storage.objectViewer for reading
-# and roles/storage.objectCreator for writing new objects.
 echo "Granting roles/storage.objectAdmin..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
   --role="roles/storage.objectAdmin" \
-  --condition=None # Ensure no condition or a valid one
+  --condition=None
 
+# Roles for Eventarc to invoke the Cloud Run service (v2 Function)
+# The function's runtime service account needs to be invokable.
+echo "Granting roles/run.invoker to ${FUNCTIONS_SERVICE_ACCOUNT} (allows Eventarc to invoke the function)..."
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
+  --role="roles/run.invoker" \
+  --condition=None
 
-# --- Optional Roles (Uncomment if needed) ---
-# Grant Cloud Storage Object Viewer (if function needs to read other files)
-# echo "Granting roles/storage.objectViewer..."
-# gcloud projects add-iam-policy-binding $PROJECT_ID \
-#   --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
-#   --role="roles/storage.objectViewer" \
-#   --condition=None
+# The function's runtime service account also needs to be able to receive events via Eventarc.
+echo "Granting roles/eventarc.eventReceiver to ${FUNCTIONS_SERVICE_ACCOUNT} (allows function to receive Eventarc events)..."
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
+  --role="roles/eventarc.eventReceiver" \
+  --condition=None
 
-# Grant Pub/Sub Publisher (if function needs to publish messages)
-# echo "Granting roles/pubsub.publisher..."
-# gcloud projects add-iam-policy-binding $PROJECT_ID \
-#   --member="serviceAccount:${FUNCTIONS_SERVICE_ACCOUNT}" \
-#   --role="roles/pubsub.publisher" \
-#   --condition=None
-# --- End Optional Roles ---
-
+# Optional: The Eventarc Service Agent (service-<PROJECT_NUMBER>@gcp-sa-eventarc.iam.gserviceaccount.com)
+# might need "Service Account Token Creator" role on the function's identity if it's not the default compute SA.
+# However, granting run.invoker and eventarc.eventReceiver to the function's SA is often sufficient.
 
 echo "--- IAM roles granted successfully. ---"
 echo ""
@@ -85,33 +81,33 @@ echo "Setting configuration variables..."
 # CV_DOC_PROCESSOR_PATH="projects/${PROJECT_ID}/locations/us/processors/your-processor-id"
 # CV_VERTEX_MODEL="your-vertex-model-name" # e.g., text-bison@001 or text-bison-32k
 
-firebase functions:config:set \
-     cv.doc_processor_path="${CV_DOC_PROCESSOR_PATH}" \
-     cv.vertex_model="${CV_VERTEX_MODEL}" \
-     cv.project_id="${PROJECT_ID}"
-     # Note: Vertex model path is simplified to just the model ID if using standard publisher
+# Make sure CV_DOC_PROCESSOR_PATH and CV_VERTEX_MODEL are set as environment variables
+# when running this script, or replace the variables below with actual string values.
+# Example: export CV_DOC_PROCESSOR_PATH="projects/your-gcp-project-id/locations/us/processors/your-processor-id"
+# Example: export CV_VERTEX_MODEL="text-bison-32k"
 
-# Example using full path if needed:
-# firebase functions:config:set \
-#      cv.doc_processor_path="projects/${PROJECT_ID}/locations/us/processors/your-processor-id" \
-#      cv.vertex_model="projects/${PROJECT_ID}/locations/us-central1/publishers/google/models/text-bison-32k" \
-#      cv.project_id="${PROJECT_ID}"
-
-
-echo "--- Configuration set. ---"
+if [ -z "$CV_DOC_PROCESSOR_PATH" ] || [ -z "$CV_VERTEX_MODEL" ]; then
+  echo "Warning: CV_DOC_PROCESSOR_PATH or CV_VERTEX_MODEL environment variables are not set."
+  echo "Skipping functions:config:set for these variables. Ensure they are set directly in Firebase console or via other means if needed."
+else
+  firebase functions:config:set \
+       cv.doc_processor_path="${CV_DOC_PROCESSOR_PATH}" \
+       cv.vertex_model="${CV_VERTEX_MODEL}" \
+       cv.project_id="${PROJECT_ID}"
+  echo "--- Configuration set for cv.doc_processor_path and cv.vertex_model. ---"
+fi
+# Also set gcp.project_id if your functions need it explicitly from config
+firebase functions:config:set cv.project_id="${PROJECT_ID}"
+echo "--- Configuration set for cv.project_id. ---"
 echo ""
 echo "You can now deploy the function and storage rules:"
-echo "firebase deploy --only functions,storage" # Deploy all functions and storage
-
-# Or deploy specific functions:
-# echo "firebase deploy --only functions:parseResumePdf,functions:suggestSummary,functions:suggestSkills,storage"
+echo "firebase deploy --only functions,storage"
 
 # Note: Make this script executable with `chmod +x functions/deploy.sh`
 # Run it with `./functions/deploy.sh`
 # It's safe to run this script multiple times (idempotent).
-# Ensure PROJECT_ID, CV_DOC_PROCESSOR_PATH, and CV_VERTEX_MODEL environment variables are set before running.
+# Ensure PROJECT_ID (and optionally CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL for config setting)
+# environment variables are set before running.
 # Example: export PROJECT_ID="your-gcp-project-id"
 # Example: export CV_DOC_PROCESSOR_PATH="projects/your-gcp-project-id/locations/us/processors/your-processor-id"
 # Example: export CV_VERTEX_MODEL="text-bison-32k"
-
-```

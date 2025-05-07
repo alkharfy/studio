@@ -4,14 +4,14 @@ import * as fs from 'fs';
 import type { CloudEvent } from "firebase-functions/v2";
 import { onObjectFinalized, type StorageObjectData } from "firebase-functions/v2/storage";
 import { initializeApp, getApps as getAdminApps } from "firebase-admin/app";
-import { getFirestore, FieldValue, setDoc as firestoreSetDoc, doc as firestoreDoc, serverTimestamp as firestoreServerTimestamp } from "firebase-admin/firestore"; // Corrected serverTimestamp import
+import { getFirestore, FieldValue, setDoc as firestoreSetDoc, doc as firestoreDoc, serverTimestamp as firestoreServerTimestamp } from "firebase-admin/firestore";
 import { getStorage as getAdminStorage } from "firebase-admin/storage";
 import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
 import { VertexAI, type Content, type Part } from "@google-cloud/vertexai";
-import * as functions from "firebase-functions";
+import * as functions from "firebase-functions"; // For functions.config()
 import { HttpsCallableContext, CallableRequest, onCall } from "firebase-functions/v2/https";
 import { logger as functionsLogger } from "firebase-functions/logger";
-import type { Resume as FirestoreResumeData } from "./dbTypes"; // Import the dbTypes
+import type { Resume as FirestoreResumeData } from "./dbTypes";
 
 // Initialize Firebase Admin SDK
 if (!getAdminApps().length) {
@@ -24,91 +24,119 @@ const adminStorage = getAdminStorage();
 
 // Configuration for Document AI and Vertex AI
 // Prefer environment variables, then fallback to Firebase functions config
-const docProcessorPathConfig = process.env.CV_DOC_PROCESSOR_PATH || functions.config().cv?.doc_processor_path;
-const vertexModelConfig = process.env.CV_VERTEX_MODEL || functions.config().cv?.vertex_model;
-const gcpProjectId = process.env.GCLOUD_PROJECT; // Automatically available in Cloud Functions
+// Ensure consistent casing for environment variables (e.g., uppercase)
+const DOC_PROCESSOR_PATH_ENV = process.env.CV_DOC_PROCESSOR_PATH;
+const VERTEX_MODEL_ENV = process.env.CV_VERTEX_MODEL;
 
+const gcpProjectId = process.env.GCLOUD_PROJECT || functions.config().cv?.project_id;
+
+// Initialize clients, ensuring config values are available
 let docaiClient: DocumentProcessorServiceClient | undefined;
 let generativeModel: ReturnType<VertexAI["getGenerativeModel"]> | undefined;
 
+const docProcessorPathConfig = DOC_PROCESSOR_PATH_ENV || functions.config().cv?.doc_processor_path;
+const vertexModelConfig = VERTEX_MODEL_ENV || functions.config().cv?.vertex_model;
+
 if (docProcessorPathConfig && vertexModelConfig && gcpProjectId) {
-  // Assuming processor is in 'us' region as per typical setup and DOC_PROCESSOR_PATH structure
   docaiClient = new DocumentProcessorServiceClient({ apiEndpoint: "us-documentai.googleapis.com" });
-  const vertexAI = new VertexAI({ project: gcpProjectId, location: "us-central1" }); // Vertex AI common location
+  const vertexAI = new VertexAI({ project: gcpProjectId, location: "us-central1" });
   generativeModel = vertexAI.getGenerativeModel({ model: vertexModelConfig });
-  functionsLogger.info("Document AI and Vertex AI clients initialized.", { docProcessorPathConfig, vertexModelConfig });
+  functionsLogger.info("Document AI and Vertex AI clients initialized.", { docProcessorPathConfig, vertexModelConfig, gcpProjectId });
 } else {
-  functionsLogger.error("Critical: Document AI processor path or Vertex AI model or GCP Project ID is not configured. Check environment variables (CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL) or Firebase functions.config().");
+  functionsLogger.error("Critical: Document AI processor path, Vertex AI model, or GCP Project ID is not configured. Check environment variables (CV_DOC_PROCESSOR_PATH, CV_VERTEX_MODEL, GCLOUD_PROJECT) or Firebase functions.config().", {
+    hasDocPath: !!docProcessorPathConfig,
+    hasVertexModel: !!vertexModelConfig,
+    hasProjectId: !!gcpProjectId
+  });
 }
+
+// Determine bucket name based on environment
+const GCLOUD_PROJECT_ID = process.env.GCLOUD_PROJECT;
+const AppSpotBucket = GCLOUD_PROJECT_ID ? `${GCLOUD_PROJECT_ID}.appspot.com` : undefined;
+const EMULATOR_STORAGE_BUCKET = "default-bucket"; // Default bucket for Firebase Storage Emulator
+
+const bucketToListen = process.env.FUNCTIONS_EMULATOR === 'true' ? EMULATOR_STORAGE_BUCKET : AppSpotBucket;
+
+if (!bucketToListen) {
+    functionsLogger.error("CRITICAL: Cannot determine bucket to listen on. GCLOUD_PROJECT env var might be missing for production, or not in emulator mode.");
+    // Potentially throw an error here or handle it gracefully if the function cannot operate
+}
+
 
 export const parseResumePdf = onObjectFinalized(
   {
-    region: "us-central1", // Deployment region for the function itself
-    bucket: `${gcpProjectId}.appspot.com`, // Default bucket associated with the project
-    eventFilters: { ["object.name"]: "resumes_uploads/**" }, // Trigger only for this path
+    region: "us-central1",
+    bucket: bucketToListen || AppSpotBucket!, // Fallback to AppSpotBucket if bucketToListen is somehow undefined (should not happen if GCLOUD_PROJECT is set)
+    eventFilters: { name: "resumes_uploads/**" }, // Corrected key to 'name' for path prefix
     memory: "1GiB",
     timeoutSeconds: 540,
     cpu: 1,
   },
   async (event: CloudEvent<StorageObjectData>) => {
     const { bucket, name, metageneration } = event.data;
+    functionsLogger.info(`🔔 Function TRIGGERED. Event ID: ${event.id}, Bucket: ${bucket}, File: ${name}, Metageneration: ${metageneration}`);
+
 
     if (!name) {
-      functionsLogger.log("Object name is undefined, exiting.");
+      functionsLogger.log("Object name is undefined, exiting.", { eventId: event.id });
       return;
     }
-
-    // Avoid infinite loops from metadata updates by the function itself
-    if (metageneration && parseInt(metageneration as string, 10) > 1) {
-      functionsLogger.log("This is a metadata update event, not a new upload. Skipping.", { name, metageneration });
-      return;
-    }
-
-    functionsLogger.log("🔔 TRIGGERED on", name);
 
     if (!name.startsWith("resumes_uploads/")) {
-      functionsLogger.log("File is not in resumes_uploads/, skipping.", { name });
+      functionsLogger.log(`File ${name} is not in resumes_uploads/, skipping.`, { eventId: event.id });
+      return;
+    }
+    
+    // Avoid infinite loops from metadata updates by the function itself
+    // Casting metageneration to string before parseInt as it can be number or string
+    if (metageneration && parseInt(String(metageneration), 10) > 1) {
+      functionsLogger.log(`Metada update for ${name} (metageneration: ${metageneration}), skipping.`, { eventId: event.id });
       return;
     }
 
     const uid = name.split("/")[1];
     if (!uid) {
-      functionsLogger.error("Could not extract UID from path:", name);
+      functionsLogger.error(`Could not extract UID from path: ${name}`, { eventId: event.id });
       return;
     }
 
-    const fileName = name.split("/").pop()!; // Should always exist if name is valid
+    const fileName = name.split("/").pop()!;
     const tempFilePath = `/tmp/${fileName}`;
 
     if (!docaiClient || !generativeModel || !docProcessorPathConfig) {
-      functionsLogger.error("Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf.", { name });
+      functionsLogger.error("Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf.", { name, eventId: event.id });
       const errorResumeId = Date.now().toString();
-      await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-        parsingError: "config_error_services_not_initialized",
-        storagePath: name,
-        originalFileName: fileName,
-        createdAt: firestoreServerTimestamp(),
-        updatedAt: firestoreServerTimestamp(),
-      });
+      try {
+        await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
+            parsingError: "config_error_services_not_initialized",
+            storagePath: name,
+            originalFileName: fileName,
+            createdAt: firestoreServerTimestamp(),
+            updatedAt: firestoreServerTimestamp(),
+        });
+      } catch (dbError) {
+          functionsLogger.error("Failed to write config error to Firestore", { dbError, uid, errorResumeId, eventId: event.id });
+      }
       return;
     }
 
     try {
-      // 1. Download file
+      functionsLogger.log(`Attempting to download ${name} from bucket ${bucket} to ${tempFilePath}`, { eventId: event.id });
       await adminStorage.bucket(bucket).file(name).download({ destination: tempFilePath });
-      functionsLogger.log("📄 File downloaded to", tempFilePath, { name });
+      functionsLogger.log(`📄 File downloaded to ${tempFilePath}`, { name, eventId: event.id });
 
-      // 2. OCR via Document AI
       const fileContent = fs.readFileSync(tempFilePath);
-      const [docAiResult] = await docaiClient!.processDocument({
-        name: docProcessorPathConfig, // Full processor path
+      functionsLogger.log(`Read file content from ${tempFilePath}, size: ${fileContent.byteLength} bytes`, { eventId: event.id });
+      
+      const [docAiResult] = await docaiClient.processDocument({
+        name: docProcessorPathConfig,
         rawDocument: { content: fileContent, mimeType: "application/pdf" },
       });
       const rawText = docAiResult.document?.text || "";
-      functionsLogger.log("📝 OCR extracted text length:", rawText.length, { name });
+      functionsLogger.log(`📝 OCR extracted text length: ${rawText.length}`, { name, eventId: event.id });
 
       if (!rawText.trim()) {
-        functionsLogger.warn("OCR result is empty. Writing parsingError to Firestore.", { name });
+        functionsLogger.warn("OCR result is empty. Writing parsingError to Firestore.", { name, eventId: event.id });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ocr_empty_result",
@@ -117,12 +145,12 @@ export const parseResumePdf = onObjectFinalized(
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
         });
-        return; // Stop further processing
+        return;
       }
 
-      const textSnippet = rawText.slice(0, 15000); // Limit text for Vertex AI
+      const textSnippet = rawText.slice(0, 15000);
+      functionsLogger.log(`Using text snippet for Vertex AI (length: ${textSnippet.length})`, { eventId: event.id });
 
-      // 3. Extract structured JSON via Vertex AI
       const prompt = `
         You are an expert Arabic/English résumé parser.
         Return ONLY minified JSON that exactly matches this TypeScript type – no comments, no extra keys, no Markdown:
@@ -134,11 +162,11 @@ export const parseResumePdf = onObjectFinalized(
             phone: string, address: string, jobTitle: string
           },
           summary: string, // Changed from objective
-          education: { degree: string, institution: string, graduationYear: string, details?: string }[], // Changed institute to institution, year to graduationYear, added details
-          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[], // Changed title to jobTitle, start to startDate, end to endDate
-          skills: { name: string }[], // Changed to array of objects
+          education: { degree: string, institution: string, graduationYear: string, details?: string }[],
+          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[],
+          skills: { name: string }[],
           languages: { name: string, level?: string }[],
-          hobbies?: string[] // Made optional
+          hobbies?: string[]
         }
 
         –––––––––––––––––––––––––––––––––
@@ -177,19 +205,15 @@ export const parseResumePdf = onObjectFinalized(
         """
       `;
 
-      const aiResponse = await generativeModel!.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+      const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
       let jsonString = "";
-      // Robustly access the text part of the response
-      if (aiResponse.response && aiResponse.response.candidates && aiResponse.response.candidates.length > 0) {
-          const responseContent = aiResponse.response.candidates[0].content;
-          if (responseContent?.parts?.[0] && 'text' in responseContent.parts[0]) {
-              jsonString = responseContent.parts[0].text || "";
-          }
+      if (aiResponse.response?.candidates?.[0]?.content?.parts?.[0] && 'text' in aiResponse.response.candidates[0].content.parts[0]) {
+          jsonString = aiResponse.response.candidates[0].content.parts[0].text || "";
       }
-      functionsLogger.info("🎯 Vertex AI raw JSON string:", jsonString, { name });
+      functionsLogger.info(`🎯 Vertex AI raw JSON string: "${jsonString}"`, { name, eventId: event.id });
 
       if (!jsonString.trim()) {
-        functionsLogger.warn("Vertex AI returned empty string. Writing parsingError to Firestore.", { name });
+        functionsLogger.warn("Vertex AI returned empty string. Writing parsingError to Firestore.", { name, eventId: event.id });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "vertex_empty_response",
@@ -204,28 +228,27 @@ export const parseResumePdf = onObjectFinalized(
       let extractedData;
       try {
         extractedData = JSON.parse(jsonString);
-      } catch (e: any) { // Explicitly type 'e'
-        functionsLogger.error("🚨 Failed to parse JSON from Vertex AI:", e.message, "Raw string:", jsonString, { name });
-        const errorResumeId = Date.now().toString(); // Use a different ID for error doc
+      } catch (e: any) {
+        functionsLogger.error("🚨 Failed to parse JSON from Vertex AI:", e.message, "Raw string:", jsonString, { name, eventId: event.id });
+        const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-          parsingError: `vertex_json_parse_error: ${e.message}`,
-          rawAiOutput: jsonString, // Store the problematic string for debugging
+          parsingError: `vertex_json_parse_error: ${e.message.substring(0, 100)}`, // Truncate message
+          rawAiOutput: jsonString.substring(0, 500), // Store snippet of problematic string
           storagePath: name,
           originalFileName: fileName,
           createdAt: firestoreServerTimestamp(),
           updatedAt: firestoreServerTimestamp(),
         });
-        return; // Stop processing
+        return;
       }
-      functionsLogger.log("📊 Parsed JSON from Vertex AI:", extractedData, { name });
+      functionsLogger.log("📊 Parsed JSON from Vertex AI:", extractedData, { name, eventId: event.id });
 
-      // Validate crucial fields (e.g., fullName)
       if (!extractedData.personalInfo?.fullName) {
-        functionsLogger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.", { name, extractedData });
+        functionsLogger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.", { name, extractedData, eventId: event.id });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ai_output_missing_fullname",
-            extractedData: extractedData, // Store what was extracted
+            extractedData: extractedData,
             storagePath: name,
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
@@ -234,15 +257,13 @@ export const parseResumePdf = onObjectFinalized(
         return;
       }
 
-      // 4. Write to Firestore
-      const resumeId = Date.now().toString(); // Use a simple timestamp-based ID
+      const resumeId = Date.now().toString();
       const resumeDocRef = firestoreDoc(db, "users", uid, "resumes", resumeId);
 
-      // Construct the final object to save, matching the FirestoreResumeData interface
       const finalResumeData: FirestoreResumeData = {
-        resumeId: resumeId, // Add the ID to the document itself
-        userId: uid, // Add userId
-        title: extractedData.title || fileName, // Fallback to filename if title is missing
+        resumeId: resumeId,
+        userId: uid,
+        title: extractedData.title || fileName,
         personalInfo: {
             fullName: extractedData.personalInfo?.fullName || null,
             email: extractedData.personalInfo?.email || null,
@@ -250,74 +271,72 @@ export const parseResumePdf = onObjectFinalized(
             address: extractedData.personalInfo?.address || null,
             jobTitle: extractedData.personalInfo?.jobTitle || null,
         },
-        summary: extractedData.summary || extractedData.objective || null, // Use summary, fallback to objective
-        education: (extractedData.education || []).map((edu: any) => ({ // Add type for edu
+        summary: extractedData.summary || extractedData.objective || null,
+        education: (extractedData.education || []).map((edu: any) => ({
             degree: edu.degree || null,
-            institution: edu.institution || edu.institute || null, // Handle both institution/institute
-            graduationYear: edu.graduationYear || edu.year || null, // Handle both graduationYear/year
+            institution: edu.institution || edu.institute || null,
+            graduationYear: edu.graduationYear || edu.year || null,
             details: edu.details || null,
         })),
-        experience: (extractedData.experience || []).map((exp: any) => ({ // Add type for exp
-            jobTitle: exp.jobTitle || exp.title || null, // Handle both jobTitle/title
+        experience: (extractedData.experience || []).map((exp: any) => ({
+            jobTitle: exp.jobTitle || exp.title || null,
             company: exp.company || null,
-            startDate: exp.startDate || exp.start || null, // Handle both startDate/start
+            startDate: exp.startDate || exp.start || null,
             endDate: exp.endDate || exp.end || null,
             description: exp.description || null,
         })),
-        skills: (extractedData.skills || []).map((skill: any) => ({ // Add type for skill
+        skills: (extractedData.skills || []).map((skill: any) => ({
             name: typeof skill === 'string' ? skill : (skill?.name || null)
-        })).filter((s: any) => s.name), // Filter out empty/invalid skills
+        })).filter((s: any) => s.name),
         languages: extractedData.languages || [],
         hobbies: extractedData.hobbies || [],
-        customSections: extractedData.customSections || [], // Assuming customSections might be extracted
-        // Metadata
+        customSections: extractedData.customSections || [],
         parsingDone: true,
-        parsingError: null, // Explicitly set to null on success
+        parsingError: null,
         storagePath: name,
-        originalFileName: fileName, // Store the original file name
-        createdAt: firestoreServerTimestamp(),
-        updatedAt: firestoreServerTimestamp(),
+        originalFileName: fileName,
+        createdAt: firestoreServerTimestamp() as any, // Cast for FieldValue
+        updatedAt: firestoreServerTimestamp() as any, // Cast for FieldValue
       };
 
-      await firestoreSetDoc(resumeDocRef, finalResumeData as any); // Cast to any if type mismatches are complex during dev
-      functionsLogger.log("✅ Successfully wrote resume to users/%s/resumes/%s", uid, resumeId, { name });
+      await firestoreSetDoc(resumeDocRef, finalResumeData);
+      functionsLogger.log(`✅ Successfully wrote resume to users/${uid}/resumes/${resumeId}`, { name, eventId: event.id });
 
-      // Set metadata on the storage object
       try {
         await adminStorage.bucket(bucket).file(name).setMetadata({ metadata: { resumeId: resumeId, parsingStatus: 'completed' } });
-        functionsLogger.log("✅ Set metadata on storage object:", name, { resumeId });
+        functionsLogger.log("✅ Set metadata on storage object:", name, { resumeId, eventId: event.id });
       } catch (metaError: any) {
-        functionsLogger.error("🚨 Error setting metadata on storage object:", metaError.message, { name, metaErrorObj: metaError });
+        functionsLogger.error("🚨 Error setting metadata on storage object:", metaError.message, { name, metaErrorObj: metaError, eventId: event.id });
       }
 
-      // Update latestResumeId on the user document
       try {
         await firestoreSetDoc(firestoreDoc(db, "users", uid), { latestResumeId: resumeId, updatedAt: firestoreServerTimestamp() }, { merge: true });
-        functionsLogger.log("✅ Updated latestResumeId for user:", uid, { resumeId });
+        functionsLogger.log("✅ Updated latestResumeId for user:", uid, { resumeId, eventId: event.id });
       } catch (userUpdateError: any) {
-         functionsLogger.error("🚨 Error updating latestResumeId for user:", userUpdateError.message, { uid, resumeId, userUpdateErrorObj: userUpdateError });
+         functionsLogger.error("🚨 Error updating latestResumeId for user:", userUpdateError.message, { uid, resumeId, userUpdateErrorObj: userUpdateError, eventId: event.id });
       }
 
-
-    } catch (error: any) { // Explicitly type 'error'
-      functionsLogger.error("🚨 Unhandled error in parseResumePdf:", error.message, { name, errorObj: error });
-      // Attempt to write an error document to Firestore
+    } catch (error: any) {
+      functionsLogger.error("🚨 Unhandled error in parseResumePdf:", error.message, { name, errorObj: error, eventId: event.id });
       const errorResumeId = Date.now().toString();
-      await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-        parsingError: `unknown_function_error: ${error.message}`,
-        storagePath: name,
-        originalFileName: fileName, // Include originalFileName here too
-        createdAt: firestoreServerTimestamp(),
-        updatedAt: firestoreServerTimestamp(),
-      });
+      try {
+        await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
+            parsingError: `unknown_function_error: ${error.message.substring(0, 100)}`,
+            storagePath: name,
+            originalFileName: fileName,
+            createdAt: firestoreServerTimestamp(),
+            updatedAt: firestoreServerTimestamp(),
+        });
+      } catch (dbError) {
+          functionsLogger.error("Failed to write unhandled error to Firestore", { dbError, uid, errorResumeId, eventId: event.id });
+      }
     } finally {
-      // Clean up the temporary file
       if (fs.existsSync(tempFilePath)) {
         try {
           fs.unlinkSync(tempFilePath);
-          functionsLogger.log("🗑️ Temporary file deleted:", tempFilePath, { name });
-        } catch (unlinkError: any) { // Explicitly type 'unlinkError'
-          functionsLogger.error("🚨 Error deleting temporary file:", unlinkError.message, { name, unlinkErrorObj: unlinkError });
+          functionsLogger.log(`🗑️ Temporary file deleted: ${tempFilePath}`, { name, eventId: event.id });
+        } catch (unlinkError: any) {
+          functionsLogger.error("🚨 Error deleting temporary file:", unlinkError.message, { name, unlinkErrorObj: unlinkError, eventId: event.id });
         }
       }
     }
@@ -327,12 +346,8 @@ export const parseResumePdf = onObjectFinalized(
 
 // --- suggestSummary Cloud Function (HTTPS Callable) ---
 export const suggestSummary = onCall(
-  // Options for the function, e.g., region, memory
-  // { region: "us-central1", memory: "512MiB" },
-  async (request: CallableRequest<{ jobTitle?: string; yearsExp?: number; skills?: string[]; lang?: string }>) => { // Removed context argument as it is not used
+  async (request: CallableRequest<{ jobTitle?: string; yearsExp?: number; skills?: string[]; lang?: string }>) => {
     const data = request.data;
-  // Check for authentication using the passed context
-  // request.auth will be populated if the function is called by an authenticated user
   if (!request.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
   }
@@ -353,35 +368,27 @@ export const suggestSummary = onCall(
   `;
 
   try {
-    const aiResponse = await generativeModel!.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
     const responseContent: Content | null = aiResponse.response.candidates?.[0]?.content ?? null;
     let summaryText = "";
 
-    // Robustly get text from response part
-     if (responseContent && responseContent.parts && responseContent.parts.length > 0) {
-         // Find the first part that is a text part
-         const textPart = responseContent.parts.find((part: Part): part is { text: string } => 'text' in part) as { text: string } | undefined;
-         if (textPart) {
-            summaryText = textPart.text || "";
-         } else if (responseContent.parts[0] && 'text' in responseContent.parts[0]) { // Fallback for older structure or if find doesn't work as expected
-            summaryText = responseContent.parts[0].text || "";
-         }
+     if (responseContent?.parts?.[0] && 'text' in responseContent.parts[0]) {
+        summaryText = responseContent.parts[0].text || "";
      }
-
 
     functionsLogger.info("💡 suggestSummary AI response:", { jobTitle, summaryText });
     return { summary: summaryText.trim() };
-  } catch (error: any) { // Explicitly type 'error'
+  } catch (error: any) {
     functionsLogger.error("🚨 Error in suggestSummary:", error.message, { jobTitle, errorObj: error });
     throw new functions.https.HttpsError('internal', 'Failed to generate summary.', error.message);
   }
 });
 
 
-export const suggestSkills = onCall( // Changed from functions.https.onCall to onCall
-  async (request: CallableRequest<{ jobTitle?: string; max?: number; lang?: string }>) => { // Removed context, use request.auth
+export const suggestSkills = onCall(
+  async (request: CallableRequest<{ jobTitle?: string; max?: number; lang?: string }>) => {
     const data = request.data;
-  if (!request.auth) { // Check auth from request
+  if (!request.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
   }
   if (!generativeModel) {
@@ -401,43 +408,32 @@ export const suggestSkills = onCall( // Changed from functions.https.onCall to o
   `;
 
   try {
-    const aiResponse = await generativeModel!.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
+    const aiResponse = await generativeModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }] });
     const responseContent: Content | null = aiResponse.response.candidates?.[0]?.content ?? null;
-    let skillsJsonString = "";
-    // Robustly get text from response part
-    if (responseContent && responseContent.parts && responseContent.parts.length > 0) {
-         const textPart = responseContent.parts.find((part: Part): part is { text: string } => 'text' in part) as { text: string } | undefined;
-         if (textPart) {
-            skillsJsonString = textPart.text || "[]"; // Default to empty array string if text is undefined
-         } else if (responseContent.parts[0] && 'text' in responseContent.parts[0]) { // Fallback
-            skillsJsonString = responseContent.parts[0].text || "[]";
-         }
+    let skillsJsonString = "[]"; // Default to empty array string
+    if (responseContent?.parts?.[0] && 'text' in responseContent.parts[0]) {
+        skillsJsonString = responseContent.parts[0].text || "[]";
      }
     
     functionsLogger.info("💡 suggestSkills AI response:", { jobTitle, skillsJsonString });
-    // Attempt to parse the string, ensure it's an array of strings
     let suggestedSkills: string[] = [];
     try {
         const parsed = JSON.parse(skillsJsonString);
         if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) {
             suggestedSkills = parsed;
         } else {
-            // Log if the structure is not as expected but still valid JSON
             functionsLogger.warn("suggestSkills: AI response was not a valid JSON array of strings. Raw:", skillsJsonString, { jobTitle });
         }
-    } catch (parseError: any) { // Explicitly type 'parseError'
+    } catch (parseError: any) {
         functionsLogger.error("🚨 Error parsing skills JSON from AI:", parseError.message, "Raw:", skillsJsonString, { jobTitle, parseErrorObj: parseError });
-         // Fallback for non-JSON string: try to split by comma if it's a simple list
          if (typeof skillsJsonString === 'string' && !skillsJsonString.includes('[') && !skillsJsonString.includes('{')) {
             suggestedSkills = skillsJsonString.split(',').map(s => s.trim()).filter(Boolean);
          }
     }
 
-    return { skills: suggestedSkills.slice(0, max) }; // Ensure max limit
-  } catch (error: any) { // Explicitly type 'error'
+    return { skills: suggestedSkills.slice(0, max) };
+  } catch (error: any) {
     functionsLogger.error("🚨 Error in suggestSkills:", error.message, { jobTitle, errorObj: error });
     throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
   }
 });
-
-    
