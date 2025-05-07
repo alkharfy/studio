@@ -38,18 +38,18 @@ const experienceSchema = z.object({
   startDate: z.string().min(1, "يجب إدخال تاريخ البدء").nullable().default(''),
   endDate: z.string().optional().nullable().default(''),
   description: z.string().optional().nullable().default(''),
-}).default({});
+}).default({ jobTitle: '', company: '', startDate: '', endDate: '', description: ''});
 
 const educationSchema = z.object({
   degree: z.string().nullable().default(''),
   institution: z.string().nullable().default(''),
   graduationYear: z.string().nullable().default(''),
   details: z.string().optional().nullable().default(''),
-}).default({});
+}).default({degree: '', institution: '', graduationYear: '', details: ''});
 
 const skillSchema = z.object({
   name: z.string().nullable().default(''),
-}).default({});
+}).default({name: ''});
 
 
 export const cvSchema = z.object({
@@ -76,24 +76,22 @@ interface CvFormProps {
 }
 
 export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser: User | null): CvFormData => {
-    // Manually define the default structure for CvFormData
+    // Manually define the default structure for CvFormData matching Zod defaults where possible
     const defaults: CvFormData = {
         title: 'مسودة السيرة الذاتية',
         fullName: '',
         jobTitle: '',
         email: '',
         phone: '',
-        address: null, // Optional and nullable
+        address: null, 
         summary: '',
         experience: [],
         education: [],
         skills: [],
-        yearsExperience: null, // Optional and nullable
-        jobDescriptionForAI: null, // Optional and nullable
-        // resumeId is optional and will be set if data is loaded
+        yearsExperience: null, 
+        jobDescriptionForAI: null, 
     };
 
-    // Override defaults with current user info if available
     if (currentUser) {
       defaults.fullName = currentUser.displayName || defaults.fullName;
       defaults.email = currentUser.email || defaults.email;
@@ -104,7 +102,7 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
     console.info("[normalizeResumeData] Raw Firestore data:", raw);
 
     const normalized: CvFormData = {
-        ...defaults, // Spread defaults first
+        ...defaults, 
         resumeId: raw.resumeId,
         title: raw.title || defaults.title,
         fullName: raw.personalInfo?.fullName || defaults.fullName,
@@ -112,21 +110,21 @@ export const normalizeResumeData = (raw: FirestoreResumeData | null, currentUser
         email: raw.personalInfo?.email || defaults.email,
         phone: raw.personalInfo?.phone || defaults.phone,
         address: raw.personalInfo?.address || defaults.address,
-        summary: raw.summary || raw.objective || defaults.summary, // Use summary, fallback to objective
+        summary: raw.summary || raw.objective || defaults.summary, 
         education: (raw.education ?? []).map(edu => ({
             degree: edu.degree ?? '',
-            institution: edu.institution ?? edu.institute ?? '', // Handle both institution/institute
-            graduationYear: edu.graduationYear ?? edu.year ?? '', // Handle both graduationYear/year
+            institution: edu.institution ?? edu.institute ?? '', 
+            graduationYear: edu.graduationYear ?? edu.year ?? '', 
             details: edu.details ?? '',
         })).filter(edu => edu.degree || edu.institution || edu.graduationYear),
         experience: (raw.experience ?? []).map(exp => ({
-            jobTitle: exp.jobTitle ?? exp.title ?? '', // Handle both jobTitle/title
+            jobTitle: exp.jobTitle ?? exp.title ?? '', 
             company: exp.company ?? '',
-            startDate: exp.startDate ?? exp.start ?? '', // Handle both startDate/start
+            startDate: exp.startDate ?? exp.start ?? '', 
             endDate: exp.endDate ?? exp.end ?? '',
             description: exp.description ?? '',
         })).filter(exp => exp.jobTitle || exp.company || exp.startDate || exp.endDate || exp.description),
-        skills: (raw.skills ?? []).map(skill => ({ // Ensure skills are objects {name: string}
+        skills: (raw.skills ?? []).map(skill => ({ 
             name: typeof skill === 'string' ? skill : (skill?.name ?? ''),
         })).filter(skill => skill.name),
         yearsExperience: raw.yearsExperience ?? defaults.yearsExperience,
@@ -146,8 +144,15 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
   const { toast } = useToast();
   const { currentUser } = useAuth();
 
+  const watchedValues = form.watch(); // Watch all values for logging
+
+  React.useEffect(() => {
+    console.log("[CvForm] Rendering/State Updated. Form values:", watchedValues);
+  }, [watchedValues]); // Log when any form value changes
+
+
   const functionsInstance = useMemo(() => {
-    if (typeof window !== 'undefined' && auth.app) { // Check auth.app as well
+    if (typeof window !== 'undefined' && auth.app) { 
       const functions = getFunctions(auth.app);
       if (process.env.NEXT_PUBLIC_USE_EMULATOR === 'true') {
         try {
@@ -364,9 +369,8 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
         setIsSaving(true);
          console.info("[onSubmit] Form values being saved:", values);
         try {
-            const resumeDataToSave: Partial<FirestoreResumeData> = { // Use Partial to allow resumeId to be added later
+            const resumeDataToSave: Partial<FirestoreResumeData> = { 
                 userId: currentUser.uid,
-                // resumeId: values.resumeId || '', // resumeId will be set if new or kept if existing
                 title: values.title || 'مسودة السيرة الذاتية',
                 personalInfo: {
                     fullName: values.fullName || null,
@@ -392,37 +396,35 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                 skills: (values.skills || []).map(skill => ({
                     name: skill.name || null,
                 })).filter(skill => skill.name),
-                // Ensure all fields from FirestoreResumeData are present or explicitly null/undefined
-                languages: [], // Example, ensure these are handled if they can come from `values`
+                languages: [], 
                 hobbies: [],
                 customSections: [],
                 yearsExperience: values.yearsExperience ?? null,
                 jobDescriptionForAI: values.jobDescriptionForAI ?? null,
                 updatedAt: serverTimestamp(),
-                // parsingDone, storagePath, originalFileName, createdAt are handled based on new/existing
             };
 
             let docRef;
             if (values.resumeId) {
                 docRef = doc(db, 'users', currentUser.uid, 'resumes', values.resumeId);
-                await updateDoc(docRef, resumeDataToSave as FirestoreResumeData); // Cast to full type for update
+                await updateDoc(docRef, resumeDataToSave as FirestoreResumeData); 
                 toast({ title: 'تم التحديث', description: 'تم تحديث سيرتك الذاتية بنجاح.' });
                 console.info('[onSubmit] CV Updated:', values.resumeId);
             } else {
                 const resumesCollectionRef = collection(db, 'users', currentUser.uid, 'resumes');
-                docRef = doc(resumesCollectionRef); // Auto-generate ID for new resume
+                docRef = doc(resumesCollectionRef); 
                 const newResumeId = docRef.id;
 
                 const fullDataToSave: FirestoreResumeData = {
-                    ...(resumeDataToSave as Omit<FirestoreResumeData, 'resumeId' | 'createdAt' | 'parsingDone' | 'storagePath' | 'originalFileName'>), // Cast carefully
+                    ...(resumeDataToSave as Omit<FirestoreResumeData, 'resumeId' | 'createdAt' | 'parsingDone' | 'storagePath' | 'originalFileName'>), 
                     resumeId: newResumeId,
-                    parsingDone: false, // New manual entry, no PDF parsing
+                    parsingDone: false, 
                     storagePath: null,
                     originalFileName: null,
                     createdAt: serverTimestamp(),
                 };
                 await setDoc(docRef, fullDataToSave);
-                form.setValue('resumeId', newResumeId); // Update form state with the new ID
+                form.setValue('resumeId', newResumeId); 
                 toast({ title: 'تم الحفظ', description: 'تم حفظ سيرتك الذاتية الجديدة بنجاح.' });
                 console.info('[onSubmit] CV Saved with new ID:', newResumeId);
             }
@@ -664,7 +666,7 @@ export function CvForm({ isLoadingCv }: CvFormProps) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({jobTitle: '', company: '', startDate: ''})); }}
+                                        onClick={(e) => { e.stopPropagation(); appendExperience(experienceSchema.parse({jobTitle: '', company: '', startDate: '', endDate: '', description: ''})); }} // Stop propagation
                                         className="z-10"
                                         aria-label="إضافة خبرة"
                                     >
