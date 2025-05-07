@@ -58,7 +58,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
                     console.log("Connected to Firestore Emulator.");
                     connectAuthEmulator(authInstance, 'http://127.0.0.1:9099', { disableWarnings: true });
                     console.log("Connected to Auth Emulator.");
-                    connectStorageEmulator(storageInstance, '127.0.0.1', 9199); // Ensure this line is present and correct
+                    connectStorageEmulator(storageInstance, '127.0.0.1', 9199);
                     console.log("Connected to Storage Emulator.");
                 } catch (emulatorError) {
                     console.error("Error connecting to emulators:", emulatorError);

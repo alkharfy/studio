@@ -21,11 +21,13 @@ const adminStorage = getAdminStorage();
 
 // Configuration for Vertex AI and Document AI
 const VERTEX_MODEL_ENV = process.env.CV_VERTEX_MODEL;
-const GCP_PROJECT_ID_ENV = process.env.GCLOUD_PROJECT;
+const GCP_PROJECT_ID_ENV = process.env.GCLOUD_PROJECT; // This should be automatically set in Cloud Functions environment
 const DOC_PROCESSOR_PATH_ENV = process.env.CV_DOC_PROCESSOR_PATH;
+
 
 const gcpProjectId = GCP_PROJECT_ID_ENV || functions.config().cv?.project_id;
 const vertexModelConfig = VERTEX_MODEL_ENV || functions.config().cv?.vertex_model;
+// Ensure consistent casing for doc_processor_path from config
 const docProcessorPathConfig = DOC_PROCESSOR_PATH_ENV || functions.config().cv?.doc_processor_path || functions.config().cv?.docprocessorpath;
 
 
@@ -33,9 +35,9 @@ functions.logger.info("Initial Configuration Check:", {
     vertexModelConfigValue: vertexModelConfig,
     gcpProjectIdValue: gcpProjectId,
     docProcessorPathConfigValue: docProcessorPathConfig,
-    VERTEX_MODEL_ENV,
-    GCP_PROJECT_ID_ENV,
-    DOC_PROCESSOR_PATH_ENV,
+    VERTEX_MODEL_ENV_FROM_PROCESS: process.env.CV_VERTEX_MODEL,
+    GCP_PROJECT_ID_ENV_FROM_PROCESS: process.env.GCLOUD_PROJECT,
+    DOC_PROCESSOR_PATH_ENV_FROM_PROCESS: process.env.CV_DOC_PROCESSOR_PATH,
     firebaseFunctionsConfigCV: functions.config().cv,
 });
 
@@ -81,14 +83,12 @@ if (docProcessorPathConfig) {
 
 
 // Determine the correct bucket name based on environment
-const bucketNameToListen = process.env.FUNCTIONS_EMULATOR === 'true'
-    ? 'default-bucket' // Default bucket for Firebase Storage Emulator
-    : gcpProjectId ? `${gcpProjectId}.appspot.com` : undefined;
+const BUCKET = gcpProjectId ? `${gcpProjectId}.appspot.com` : undefined;
 
-if (!bucketNameToListen) {
+if (!BUCKET) {
     functions.logger.error("CRITICAL: Cannot determine bucket to listen on. GCLOUD_PROJECT env var might be missing for production, or not in emulator mode. Function will not trigger.");
 } else {
-    functions.logger.info(`Function will listen on bucket: ${bucketNameToListen}`);
+    functions.logger.info(`Function will listen on bucket: ${BUCKET}`);
 }
 
 
@@ -97,8 +97,8 @@ export const parseResumePdf = onObjectFinalized(
     region: "us-central1",
     memory: "1GiB",
     timeoutSeconds: 540,
-    bucket: bucketNameToListen!, // Use the determined bucket name
-    // No eventFilters for path prefix; will be checked inside the function
+    bucket: BUCKET!, // Use the determined bucket name
+    eventFilters: { "object.name": "resumes_uploads/**" } // Filter for objects starting with resumes_uploads/
   },
   async (event: StorageEvent<ObjectMetadata>) => {
     const { bucket, name, metageneration, timeCreated, updated } = event.data;
@@ -106,14 +106,10 @@ export const parseResumePdf = onObjectFinalized(
 
     functions.logger.info(`🔔 Function TRIGGERED (v2). Event ID: ${eventId}, Bucket: ${bucket}, File: ${name}, Metageneration: ${metageneration}, TimeCreated: ${timeCreated}, Updated: ${updated}`);
 
-    if (!name) {
-      functions.logger.warn("Object name is undefined, exiting.", { eventId });
-      return;
-    }
-    
-    // Manual check for path prefix
-    if (!name.startsWith("resumes_uploads/")) {
-        functions.logger.info(`File ${name} is not in resumes_uploads/, skipping.`);
+    // Manual check for path prefix - this is redundant if eventFilters works as expected,
+    // but good as a safeguard or if eventFilters are ever removed.
+    if (!name || !name.startsWith("resumes_uploads/")) {
+        functions.logger.info(`File ${name || 'undefined'} is not in resumes_uploads/ or name is missing, skipping.`);
         return;
     }
 
@@ -203,7 +199,7 @@ export const parseResumePdf = onObjectFinalized(
         return;
       }
 
-      const textSnippet = rawText.slice(0, 15000);
+      const textSnippet = rawText.slice(0, 15000); // Limit text for Vertex AI
       functions.logger.info(`Using text snippet for Vertex AI (length: ${textSnippet.length})`, { eventId });
 
       const prompt = `
@@ -216,12 +212,12 @@ export const parseResumePdf = onObjectFinalized(
             fullName: string, email: string,
             phone: string, address: string, jobTitle: string
           },
-          summary: string,
-          education: { degree: string, institution: string, graduationYear: string, details?: string }[],
-          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[],
-          skills: { name: string }[],
+          summary: string, // Changed from objective
+          education: { degree: string, institution: string, graduationYear: string, details?: string }[], // Changed institute to institution, year to graduationYear, added details
+          experience: { jobTitle: string, company: string, startDate: string, endDate?: string, description?: string }[], // Changed title to jobTitle, start to startDate, end to endDate
+          skills: { name: string }[], // Changed to array of objects
           languages: { name: string, level?: string }[],
-          hobbies?: string[]
+          hobbies?: string[] // Made optional
         }
 
         –––––––––––––––––––––––––––––––––
@@ -326,14 +322,17 @@ export const parseResumePdf = onObjectFinalized(
             phone: extractedData.personalInfo?.phone || null, address: extractedData.personalInfo?.address || null,
             jobTitle: extractedData.personalInfo?.jobTitle || null,
         },
-        summary: extractedData.summary || extractedData.objective || null,
+        summary: extractedData.summary || extractedData.objective || null, // Use summary, fallback to objective for older data
         education: (extractedData.education || []).map((edu: any) => ({
-            degree: edu.degree || null, institution: edu.institution || edu.institute || null,
-            graduationYear: edu.graduationYear || edu.year || null, details: edu.details || null,
+            degree: edu.degree || null, institution: edu.institution || edu.institute || null, // Handle both institution/institute
+            graduationYear: edu.graduationYear || edu.year || null, // Handle both graduationYear/year
+            details: edu.details || null,
         })),
         experience: (extractedData.experience || []).map((exp: any) => ({
-            jobTitle: exp.jobTitle || exp.title || null, company: exp.company || null,
-            startDate: exp.startDate || exp.start || null, endDate: exp.endDate || exp.end || null,
+            jobTitle: exp.jobTitle || exp.title || null, // Handle both jobTitle/title
+            company: exp.company || null,
+            startDate: exp.startDate || exp.start || null, // Handle both startDate/start
+            endDate: exp.endDate || exp.end || null, // Handle both endDate/end
             description: exp.description || null,
         })),
         skills: (extractedData.skills || []).map((skill: any) => ({ name: typeof skill === 'string' ? skill : (skill?.name || null) })).filter((s: any) => s.name),
@@ -483,3 +482,4 @@ export const suggestSkills = functions
     throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
   }
 });
+

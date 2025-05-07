@@ -100,6 +100,10 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
     setError(null);
     setUploadProgress(0);
 
+    // Extend retry timeouts
+    storage.maxUploadRetryTime = 10 * 60 * 1000;   // 10 minutes
+    storage.maxOperationRetryTime = 10 * 60 * 1000; // 10 minutes
+
     if (useMock) {
       console.info("[PdfUploader] --- MOCK UPLOAD & PARSE ---");
       // ... (mock logic remains the same)
