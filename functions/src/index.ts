@@ -1,17 +1,17 @@
 // functions/src/index.ts
 import * as fs from 'fs';
-
 import type { CloudEvent } from "firebase-functions/v2";
 import { onObjectFinalized, type StorageObjectData } from "firebase-functions/v2/storage";
 import { initializeApp, getApps as getAdminApps } from "firebase-admin/app";
 import { getFirestore, FieldValue, setDoc as firestoreSetDoc, doc as firestoreDoc, serverTimestamp as firestoreServerTimestamp, updateDoc as firestoreUpdateDoc } from "firebase-admin/firestore";
 import { getStorage as getAdminStorage } from "firebase-admin/storage";
-import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
-import { VertexAI, type Content, type Part } from "@google-cloud/vertexai";
-import * as functions from "firebase-functions"; // For functions.config()
+// Removed: import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
+import { VertexAI, type Content } from "@google-cloud/vertexai";
+import * as functions from "firebase-functions";
 import { HttpsCallableContext, CallableRequest, onCall } from "firebase-functions/v2/https";
 import { logger as functionsLogger } from "firebase-functions/logger";
 import type { Resume as FirestoreResumeData } from "./dbTypes";
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js'; // For Node.js environment
 
 // Initialize Firebase Admin SDK
 if (!getAdminApps().length) {
@@ -22,55 +22,53 @@ if (!getAdminApps().length) {
 const db = getFirestore();
 const adminStorage = getAdminStorage();
 
-// Configuration for Document AI and Vertex AI
-const DOC_PROCESSOR_PATH_ENV = process.env.CV_DOC_PROCESSOR_PATH;
+// Configuration for Vertex AI
+// Document AI config is no longer primary for this version of the function
+// const DOC_PROCESSOR_PATH_ENV = process.env.CV_DOC_PROCESSOR_PATH; // Keep for reference or future switch
 const VERTEX_MODEL_ENV = process.env.CV_VERTEX_MODEL;
 const GCP_PROJECT_ID_ENV = process.env.GCLOUD_PROJECT;
 
 const gcpProjectId = GCP_PROJECT_ID_ENV || functions.config().cv?.project_id;
 
-let docaiClient: DocumentProcessorServiceClient | undefined;
+// Removed Document AI client initialization
 let generativeModel: ReturnType<VertexAI["getGenerativeModel"]> | undefined;
 
-const docProcessorPathConfig = DOC_PROCESSOR_PATH_ENV || functions.config().cv?.doc_processor_path;
+// const docProcessorPathConfig = DOC_PROCESSOR_PATH_ENV || functions.config().cv?.doc_processor_path; // Keep for reference
 const vertexModelConfig = VERTEX_MODEL_ENV || functions.config().cv?.vertex_model;
 
-functionsLogger.info("Initial Configuration Check:", {
-    docProcessorPathConfigValue: docProcessorPathConfig,
+functionsLogger.info("Initial Configuration Check (pdf.js variant):", {
+    // docProcessorPathConfigValue: docProcessorPathConfig, // No longer primary
     vertexModelConfigValue: vertexModelConfig,
     gcpProjectIdValue: gcpProjectId,
-    DOC_PROCESSOR_PATH_ENV,
+    // DOC_PROCESSOR_PATH_ENV, // No longer primary
     VERTEX_MODEL_ENV,
     GCP_PROJECT_ID_ENV,
     firebaseFunctionsConfigCV: functions.config().cv,
 });
 
 
-if (docProcessorPathConfig && vertexModelConfig && gcpProjectId) {
+if (vertexModelConfig && gcpProjectId) {
   try {
-    docaiClient = new DocumentProcessorServiceClient({ apiEndpoint: "us-documentai.googleapis.com" });
-    const vertexAI = new VertexAI({ project: gcpProjectId, location: "us-central1" }); // Ensure location matches your Vertex AI model
+    const vertexAI = new VertexAI({ project: gcpProjectId, location: "us-central1" });
     generativeModel = vertexAI.getGenerativeModel({ model: vertexModelConfig });
-    functionsLogger.info("Document AI and Vertex AI clients initialized successfully.");
+    functionsLogger.info("Vertex AI client initialized successfully (pdf.js variant).");
   } catch (clientInitError: any) {
-    functionsLogger.error("Error initializing Document AI or Vertex AI clients:", {
+    functionsLogger.error("Error initializing Vertex AI client (pdf.js variant):", {
       errorMessage: clientInitError.message,
       errorStack: clientInitError.stack,
-      docProcessorPathConfig,
       vertexModelConfig,
       gcpProjectId
     });
   }
 } else {
-  functionsLogger.error("CRITICAL: Document AI processor path, Vertex AI model, or GCP Project ID is NOT configured. Function will not process PDFs.", {
-    hasDocPath: !!docProcessorPathConfig,
+  functionsLogger.error("CRITICAL: Vertex AI model or GCP Project ID is NOT configured. Function will not process PDFs correctly.", {
     hasVertexModel: !!vertexModelConfig,
     hasGcpProjectId: !!gcpProjectId
   });
 }
 
 const bucketNameToListen = process.env.FUNCTIONS_EMULATOR === 'true' 
-    ? 'default-bucket' // Default bucket for Firebase Storage Emulator
+    ? 'default-bucket' 
     : gcpProjectId ? `${gcpProjectId}.appspot.com` : undefined;
 
 if (!bucketNameToListen) {
@@ -83,7 +81,7 @@ if (!bucketNameToListen) {
 export const parseResumePdf = onObjectFinalized(
   {
     region: "us-central1",
-    bucket: bucketNameToListen!, // Use the determined bucket name
+    bucket: bucketNameToListen!, 
     eventFilters: { "name": "resumes_uploads/**" }, 
     memory: "1GiB",
     timeoutSeconds: 540,
@@ -91,27 +89,16 @@ export const parseResumePdf = onObjectFinalized(
   },
   async (event: CloudEvent<StorageObjectData>) => {
     const { bucket, name, metageneration, timeCreated, updated } = event.data;
-    functionsLogger.info(`🔔 Function TRIGGERED. Event ID: ${event.id}, Bucket: ${bucket}, File: ${name}, Metageneration: ${metageneration}, TimeCreated: ${timeCreated}, Updated: ${updated}`);
+    functionsLogger.info(`🔔 Function TRIGGERED (pdf.js variant). Event ID: ${event.id}, Bucket: ${bucket}, File: ${name}, Metageneration: ${metageneration}, TimeCreated: ${timeCreated}, Updated: ${updated}`);
 
     if (!name) {
       functionsLogger.warn("Object name is undefined, exiting.", { eventId: event.id });
       return;
     }
 
-    if (!name.startsWith("resumes_uploads/")) {
-      functionsLogger.info(`File ${name} is not in resumes_uploads/, skipping.`, { eventId: event.id });
-      return;
-    }
-    
-    // Avoid infinite loops from metadata updates by the function itself
-    if (metageneration && parseInt(String(metageneration), 10) > 1) {
-      functionsLogger.info(`Metadata update for ${name} (metageneration: ${metageneration}), skipping.`, { eventId: event.id });
-      return;
-    }
-
     const uidParts = name.split("/");
-    if (uidParts.length < 3 || !uidParts[1]) {
-        functionsLogger.error(`Could not extract UID from path: ${name}. Expected format 'resumes_uploads/UID/filename.pdf'`, { eventId: event.id, pathParts: uidParts });
+     if (uidParts.length < 2 || !uidParts[1] || (uidParts[0] !== "resumes_uploads")) { // Check path structure
+        functionsLogger.error(`Could not extract UID from path or invalid path structure: ${name}. Expected format 'resumes_uploads/UID/filename.pdf'`, { eventId: event.id, pathParts: uidParts });
         return;
     }
     const uid = uidParts[1];
@@ -119,23 +106,21 @@ export const parseResumePdf = onObjectFinalized(
 
 
     const fileName = name.split("/").pop()!;
-    const tempFilePath = `/tmp/${fileName.replace(/\//g, '_')}`; // Sanitize filename for temp path
+    const tempFilePath = `/tmp/${fileName.replace(/\//g, '_')}`; 
 
-    if (!docaiClient || !generativeModel || !docProcessorPathConfig || !vertexModelConfig || !gcpProjectId) {
-      functionsLogger.error("CRITICAL: Document AI or Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf for file.", { 
+    if (!generativeModel || !vertexModelConfig || !gcpProjectId) {
+      functionsLogger.error("CRITICAL: Vertex AI services not initialized due to missing configuration. Aborting parseResumePdf for file.", { 
         fileName, 
         uid,
         eventId: event.id,
-        hasDocClient: !!docaiClient,
         hasGenModel: !!generativeModel,
-        hasDocPathConfig: !!docProcessorPathConfig,
         hasVertexModelConfig: !!vertexModelConfig,
         hasGcpProjectId: !!gcpProjectId
       });
       const errorResumeId = Date.now().toString();
       try {
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: "config_error_services_not_initialized",
+            parsingError: "config_error_vertex_not_initialized",
             storagePath: name,
             originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
@@ -144,35 +129,38 @@ export const parseResumePdf = onObjectFinalized(
             userId: uid, 
         });
       } catch (dbError: any) {
-          functionsLogger.error("Failed to write config_error_services_not_initialized to Firestore", { dbErrorMessage: dbError.message, uid, errorResumeId, eventId: event.id });
+          functionsLogger.error("Failed to write config_error_vertex_not_initialized to Firestore", { dbErrorMessage: dbError.message, uid, errorResumeId, eventId: event.id });
       }
       return;
     }
     
-    functionsLogger.info("Using Document AI Processor Path:", { path: docProcessorPathConfig });
     functionsLogger.info("Using Vertex AI Model:", { model: vertexModelConfig });
 
     try {
       functionsLogger.info(`Attempting to download ${name} from bucket ${bucket} to ${tempFilePath}`, { eventId: event.id });
-      await adminStorage.bucket(bucket).file(name).download({ destination: tempFilePath });
-      functionsLogger.info(`📄 File downloaded to ${tempFilePath}`, { name, eventId: event.id });
+      // Download file content as a buffer
+      const [fileContent] = await adminStorage.bucket(bucket).file(name).download();
+      functionsLogger.info(`📄 File downloaded, size: ${fileContent.byteLength} bytes`, { name, eventId: event.id });
 
-      const fileContent = fs.readFileSync(tempFilePath);
-      functionsLogger.info(`Read file content from ${tempFilePath}, size: ${fileContent.byteLength} bytes`, { eventId: event.id });
-      
       let rawText = "";
       try {
-        const [docAiResult] = await docaiClient.processDocument({
-          name: docProcessorPathConfig,
-          rawDocument: { content: fileContent, mimeType: "application/pdf" },
-        });
-        rawText = docAiResult.document?.text || "";
-        functionsLogger.info(`📝 OCR extracted text length: ${rawText.length}`, { name, eventId: event.id });
-      } catch (docAiError: any) {
-        functionsLogger.error("🚨 Document AI processing error:", { errorMessage: docAiError.message, errorDetails: docAiError.details, code: docAiError.code, name, eventId: event.id });
+        // Use pdf.js to extract text
+        const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileContent) }); // Pass buffer as Uint8Array
+        const pdfDocument = await loadingTask.promise;
+        
+        for (let i = 1; i <= pdfDocument.numPages; i++) {
+            const page = await pdfDocument.getPage(i);
+            const textContent = await page.getTextContent();
+            // Ensure items exist and str is a string before joining
+            rawText += textContent.items.map((item: any) => (item && typeof item.str === 'string' ? item.str : '')).join(" ") + "\n";
+        }
+        functionsLogger.info(`📝 pdf.js extracted text length: ${rawText.length}`, { name, eventId: event.id });
+
+      } catch (pdfJsError: any) {
+        functionsLogger.error("🚨 pdf.js text extraction error:", { errorMessage: pdfJsError.message, name, eventId: event.id, errorObj: pdfJsError });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: `doc_ai_error: ${docAiError.code || 'UNKNOWN'} - ${docAiError.message.substring(0,100)}`,
+            parsingError: `pdfjs_extraction_error: ${pdfJsError.message.substring(0,100)}`,
             storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
         return;
@@ -180,16 +168,16 @@ export const parseResumePdf = onObjectFinalized(
 
 
       if (!rawText.trim()) {
-        functionsLogger.warn("OCR result is empty. Writing parsingError to Firestore.", { name, eventId: event.id });
+        functionsLogger.warn("pdf.js extraction result is empty. Writing parsingError to Firestore.", { name, eventId: event.id });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
-            parsingError: "ocr_empty_result",
+            parsingError: "pdfjs_empty_result",
             storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
         return;
       }
 
-      const textSnippet = rawText.slice(0, 15000);
+      const textSnippet = rawText.slice(0, 15000); // Vertex AI token limit
       functionsLogger.info(`Using text snippet for Vertex AI (length: ${textSnippet.length})`, { eventId: event.id });
 
       const prompt = `
@@ -276,7 +264,6 @@ export const parseResumePdf = onObjectFinalized(
 
       let extractedData;
       try {
-        // Attempt to clean the string: remove markdown, newlines, then parse
         const cleanedJsonString = jsonString.replace(/```json\n?/g, "").replace(/```\n?/g, "").replace(/\n/g, "").trim();
         if (!cleanedJsonString.startsWith("{") || !cleanedJsonString.endsWith("}")) {
             throw new Error("Cleaned string is not valid JSON object format.");
@@ -288,7 +275,7 @@ export const parseResumePdf = onObjectFinalized(
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
           parsingError: `vertex_json_parse_error: ${e.message.substring(0, 100)}`, 
-          rawAiOutput: jsonString.substring(0, 1000), // Store snippet of problematic string
+          rawAiOutput: jsonString.substring(0, 1000), 
           storagePath: name, originalFileName: fileName, createdAt: firestoreServerTimestamp(), updatedAt: firestoreServerTimestamp(), resumeId: errorResumeId, userId: uid,
         });
         return;
@@ -306,7 +293,7 @@ export const parseResumePdf = onObjectFinalized(
         return;
       }
 
-      const resumeId = Date.now().toString(); // Consider using Firestore's auto-ID or a more robust unique ID
+      const resumeId = Date.now().toString(); 
       const resumeDocRef = firestoreDoc(db, "users", uid, "resumes", resumeId);
       functionsLogger.info(`Attempting to write to Firestore path: users/${uid}/resumes/${resumeId}`, { eventId: event.id });
 
@@ -337,13 +324,13 @@ export const parseResumePdf = onObjectFinalized(
         })),
         skills: (extractedData.skills || []).map((skill: any) => ({
             name: typeof skill === 'string' ? skill : (skill?.name || null)
-        })).filter((s: any) => s.name), // Ensure skills are objects and filter out empty ones
+        })).filter((s: any) => s.name),
         languages: extractedData.languages || [],
         hobbies: extractedData.hobbies || [],
         customSections: extractedData.customSections || [],
         parsingDone: true,
         parsingError: null,
-        rawAiOutput: jsonString.substring(0, 1000), // Store for potential future debugging/analysis
+        rawAiOutput: jsonString.substring(0, 1000), 
         storagePath: name,
         originalFileName: fileName,
         createdAt: firestoreServerTimestamp() as any, 
@@ -369,7 +356,7 @@ export const parseResumePdf = onObjectFinalized(
       }
 
     } catch (error: any) {
-      functionsLogger.error("🚨 Unhandled error in parseResumePdf:", { name, errorMessage: error.message, errorObj: error, eventId: event.id });
+      functionsLogger.error("🚨 Unhandled error in parseResumePdf (pdf.js variant):", { name, errorMessage: error.message, errorObj: error, eventId: event.id });
       const errorResumeId = Date.now().toString();
       try {
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
@@ -380,14 +367,8 @@ export const parseResumePdf = onObjectFinalized(
           functionsLogger.error("Failed to write unhandled_error to Firestore", { dbErrorMessage: dbError.message, uid, errorResumeId, eventId: event.id });
       }
     } finally {
-      if (fs.existsSync(tempFilePath)) {
-        try {
-          fs.unlinkSync(tempFilePath);
-          functionsLogger.log(`🗑️ Temporary file deleted: ${tempFilePath}`, { name, eventId: event.id });
-        } catch (unlinkError: any) {
-          functionsLogger.error("🚨 Error deleting temporary file:", { name, errorMessage: unlinkError.message, unlinkErrorObj: unlinkError, eventId: event.id });
-        }
-      }
+      // No temp file to clean up if using buffer directly
+      // if (fs.existsSync(tempFilePath)) { ... } 
     }
   }
 );
@@ -395,7 +376,7 @@ export const parseResumePdf = onObjectFinalized(
 
 // --- suggestSummary Cloud Function (HTTPS Callable) ---
 export const suggestSummary = onCall(
-  { region: "us-central1", memory: "512MiB" }, // Added region and memory
+  { region: "us-central1", memory: "512MiB" }, 
   async (request: CallableRequest<{ jobTitle?: string; yearsExp?: number; skills?: string[]; lang?: string }>) => {
     const data = request.data;
   if (!request.auth) {
@@ -437,7 +418,7 @@ export const suggestSummary = onCall(
 
 
 export const suggestSkills = onCall(
-  { region: "us-central1", memory: "512MiB" }, // Added region and memory
+  { region: "us-central1", memory: "512MiB" }, 
   async (request: CallableRequest<{ jobTitle?: string; max?: number; lang?: string }>) => {
     const data = request.data;
   if (!request.auth) {
@@ -471,7 +452,6 @@ export const suggestSkills = onCall(
     functionsLogger.info("💡 suggestSkills AI raw response:", { jobTitle, skillsJsonString, uid: request.auth.uid });
     let suggestedSkills: string[] = [];
     try {
-        // Attempt to clean the string: remove markdown, newlines, then parse
         const cleanedJsonString = skillsJsonString.replace(/```json\n?/g, "").replace(/```\n?/g, "").replace(/\n/g, "").trim();
         const parsed = JSON.parse(cleanedJsonString);
         if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) {
@@ -493,7 +473,3 @@ export const suggestSkills = onCall(
     throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
   }
 });
-
-// Ensure all functions have region and memory settings if they are HTTP callable from client
-// and might benefit from co-location or specific resource allocation.
-// For storage triggers, region is already set.
