@@ -84,7 +84,7 @@ if (docProcessorPathConfig) {
 
 // Determine the correct bucket name based on environment
 // This MUST match the storageBucket in your client-side config
-const BUCKET = gcpProjectId ? `${gcpProjectId}.appspot.com` : undefined;
+const BUCKET = gcpProjectId ? `${gcpProjectId}.appspot.com` : undefined; // Ensure .appspot.com
 
 if (!BUCKET) {
     functions.logger.error("CRITICAL: Cannot determine bucket to listen on. GCLOUD_PROJECT env var might be missing for production, or not in emulator mode. Function will not trigger.");
@@ -98,7 +98,7 @@ export const parseResumePdf = onObjectFinalized(
     region: "us-central1",
     memory: "1GiB",
     timeoutSeconds: 540,
-    bucket: BUCKET!, // Use the determined bucket name
+    bucket: BUCKET!, // Use the determined bucket name (ensures .appspot.com)
     // Removed eventFilters based on path prefix - Function will check path internally
   },
   async (event: StorageEvent<ObjectMetadata>) => {

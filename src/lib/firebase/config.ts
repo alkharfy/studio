@@ -1,7 +1,7 @@
 // src/lib/firebase/config.ts
 import { initializeApp, getApps, type FirebaseOptions, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth';
-import { getFirestore, connectFirestoreEmulator, type FirestoreSettings, persistentLocalCache, persistentMultipleTabManager, initializeFirestore } from 'firebase/firestore';
+import { getFirestore, connectFirestoreEmulator, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import { getStorage, connectStorageEmulator } from 'firebase/storage'; // Import connectStorageEmulator
 
 // Your web app's Firebase configuration from environment variables
@@ -57,7 +57,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
                     console.log("Connected to Firestore Emulator.");
                     connectAuthEmulator(authInstance, 'http://127.0.0.1:9099', { disableWarnings: true });
                     console.log("Connected to Auth Emulator.");
-                    connectStorageEmulator(storageInstance, '127.0.0.1', 9199); // Added Storage emulator connection
+                    connectStorageEmulator(storageInstance, '127.0.0.1', 9199); // Ensure Storage emulator connection is here
                     console.log("Connected to Storage Emulator.");
                 } catch (emulatorError) {
                     console.error("Error connecting to emulators:", emulatorError);

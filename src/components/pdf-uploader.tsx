@@ -157,15 +157,17 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
       return;
     }
 
-    const storagePath = `resumes_uploads/${currentUser.uid}/${Date.now()}_${selectedFile.name}`;
+    const prefixedName = `${Date.now()}_${selectedFile.name}`; // Prefix with timestamp
+    const storagePath = `resumes_uploads/${currentUser.uid}/${prefixedName}`; // Use prefixed name
     console.info(`[PdfUploader] Storage path: ${storagePath}`);
     const storageRef = ref(storage, storagePath);
-    const metadata = {
-      customMetadata: { 'requesterUid': currentUser.uid, 'originalFileName': selectedFile.name }
-    };
 
     console.info("[PdfUploader] Calling uploadBytesResumable...");
-    const uploadTask = uploadBytesResumable(storageRef, selectedFile, metadata);
+    const uploadTask = uploadBytesResumable(storageRef, selectedFile, {
+       // No custom metadata needed here, but include the retry options
+        maxUploadRetryTime: 600_000, // 10 minutes
+        maxOperationRetryTime: 600_000, // 10 minutes
+    });
 
     uploadTask.on(
       'state_changed',

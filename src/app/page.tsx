@@ -154,7 +154,7 @@ function CvBuilderPageContent() {
           // Fix: Spread docData first, then explicitly set resumeId from snapshot ID
           loadedData = { ...docData, resumeId: querySnapshot.docs[0].id };
           console.info(`[loadInitialCv] Found most recent resume by query: ${loadedData.resumeId}`);
-          setCurrentResumeId(loadedData.resumeId); // Set the app's currentResumeId
+          setCurrentResumeId(loadedData.resumeId); // Set the app's currentResumeId <<< Capture the ID here
           updateFormWithData(loadedData);
           setIsLoadingCv(false);
           return; // Exit after successful load
@@ -214,7 +214,7 @@ function CvBuilderPageContent() {
 
   // Effect to listen to the current resume document
   useEffect(() => {
-    if (!currentUser?.uid || !currentResumeId) {
+    if (!currentUser?.uid || !currentResumeId) { // << GUARD: Only subscribe when we have a currentResumeId
       console.info(`[Resume Listener] Skipping setup: User UID: ${currentUser?.uid}, Resume ID: ${currentResumeId}`);
       if (!isProcessingPdf && !currentUser?.uid && !currentResumeId) setIsLoadingCv(false);
       return;
@@ -234,14 +234,8 @@ function CvBuilderPageContent() {
         const updatedCvData = { ...docSnap.data(), resumeId: docSnap.id } as FirestoreResumeData; // Spread data first, then ID
         console.info("[Resume Listener] Raw data from Firestore:", JSON.stringify(updatedCvData).substring(0, 300) + "...");
 
-        // Critical: Ensure currentResumeId in the app matches the one from the snapshot if it differs
-        if (docSnap.id !== currentResumeId) {
-            console.warn(`[Resume Listener] Snapshot ID ${docSnap.id} differs from app's currentResumeId ${currentResumeId}. Updating app's currentResumeId.`);
-            setCurrentResumeId(docSnap.id); // Re-syncs the app's state.
-        } else {
-            // Only update form if the snapshot ID matches the current context
-            updateFormWithData(updatedCvData);
-        }
+        // No need to re-set currentResumeId here, it's already the correct one we're listening to
+        updateFormWithData(updatedCvData); // Update form with data from the snapshot
 
         if (!isProcessingPdf) {
             setIsLoadingCv(false);
@@ -297,7 +291,8 @@ function CvBuilderPageContent() {
         console.info("[Resume Listener Cleanup] Cleared processing timer on unmount/re-run.");
       }
     };
-  }, [currentUser?.uid, currentResumeId, toast, updateFormWithData, startProcessingTimer, stopProcessingTimer, isProcessingPdf, currentRawResumeData]); // Added currentRawResumeData dependency
+   }, [currentUser?.uid, currentResumeId, toast, updateFormWithData, startProcessingTimer, stopProcessingTimer, isProcessingPdf, currentRawResumeData]); // Depends on currentResumeId now
+
 
   const currentFormData = form.watch();
 
@@ -409,5 +404,3 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
-
-    
