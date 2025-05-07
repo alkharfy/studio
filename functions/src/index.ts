@@ -83,6 +83,7 @@ if (docProcessorPathConfig) {
 
 
 // Determine the correct bucket name based on environment
+// This MUST match the storageBucket in your client-side config
 const BUCKET = gcpProjectId ? `${gcpProjectId}.appspot.com` : undefined;
 
 if (!BUCKET) {
@@ -98,7 +99,7 @@ export const parseResumePdf = onObjectFinalized(
     memory: "1GiB",
     timeoutSeconds: 540,
     bucket: BUCKET!, // Use the determined bucket name
-    eventFilters: { "object.name": "resumes_uploads/**" } // Filter for objects starting with resumes_uploads/
+    // Removed eventFilters based on path prefix - Function will check path internally
   },
   async (event: StorageEvent<ObjectMetadata>) => {
     const { bucket, name, metageneration, timeCreated, updated } = event.data;
@@ -106,18 +107,17 @@ export const parseResumePdf = onObjectFinalized(
 
     functions.logger.info(`🔔 Function TRIGGERED (v2). Event ID: ${eventId}, Bucket: ${bucket}, File: ${name}, Metageneration: ${metageneration}, TimeCreated: ${timeCreated}, Updated: ${updated}`);
 
-    // Manual check for path prefix - this is redundant if eventFilters works as expected,
-    // but good as a safeguard or if eventFilters are ever removed.
+    // Internal check for path prefix
     if (!name || !name.startsWith("resumes_uploads/")) {
         functions.logger.info(`File ${name || 'undefined'} is not in resumes_uploads/ or name is missing, skipping.`);
         return;
     }
 
-    if (metageneration && parseInt(metageneration.toString(), 10) > 1) { 
+    if (metageneration && parseInt(metageneration.toString(), 10) > 1) {
         functions.logger.info(`Skipping processing for metadata update (metageneration: ${metageneration}) for file: ${name}`, { eventId });
         return;
     }
-    
+
     const pathParts = name.split("/");
     if (pathParts.length < 3 || pathParts[0] !== "resumes_uploads" || !pathParts[1]) {
         functions.logger.error(`Could not extract UID from path or invalid path structure: ${name}. Expected format 'resumes_uploads/UID/filename.pdf'`, { eventId, pathParts });
@@ -153,6 +153,7 @@ export const parseResumePdf = onObjectFinalized(
 
     try {
       functions.logger.info(`Attempting to download ${name} from bucket ${bucket}`, { eventId });
+      // Use admin SDK storage instance for download
       await adminStorage.bucket(bucket).file(name).download({ destination: tempFilePath });
       functions.logger.info(`📄 File downloaded to ${tempFilePath}`, { name, eventId });
 
@@ -302,7 +303,7 @@ export const parseResumePdf = onObjectFinalized(
       }
 
       if (!extractedData.personalInfo?.fullName) {
-        functions.logger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError to Firestore.", { name, extractedData, eventId });
+        functions.logger.warn("AI output missing crucial data (e.g., fullName). Writing parsingError: 'ai_output_missing_fullname'.", { name, extractedData, eventId });
         const errorResumeId = Date.now().toString();
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ai_output_missing_fullname", extractedData: extractedData, storagePath: name, originalFileName: fileName,
@@ -482,4 +483,3 @@ export const suggestSkills = functions
     throw new functions.https.HttpsError('internal', 'Failed to suggest skills.', error.message);
   }
 });
-

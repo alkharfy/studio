@@ -2,7 +2,7 @@
 import { initializeApp, getApps, type FirebaseOptions, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth';
 import { getFirestore, connectFirestoreEmulator, type FirestoreSettings, persistentLocalCache, persistentMultipleTabManager, initializeFirestore } from 'firebase/firestore';
-import { getStorage, connectStorageEmulator } from 'firebase/storage';
+import { getStorage, connectStorageEmulator } from 'firebase/storage'; // Import connectStorageEmulator
 
 // Your web app's Firebase configuration from environment variables
 const firebaseConfig: FirebaseOptions = {
@@ -10,7 +10,7 @@ const firebaseConfig: FirebaseOptions = {
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
   // Align storageBucket with default GCS bucket naming convention used in Cloud Functions
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ? `${process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID}.appspot.com` : undefined,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ? `${process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID}.appspot.com` : undefined, // Corrected bucket name
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
@@ -37,14 +37,13 @@ if (typeof window !== 'undefined' && !getApps().length) {
         try {
             app = initializeApp(firebaseConfig);
             authInstance = getAuth(app);
-            
-            const firestoreSettings: FirestoreSettings = {
+
+            // Use initializeFirestore for settings in v9+
+            dbInstance = initializeFirestore(app, {
                 localCache: persistentLocalCache({
                     tabManager: persistentMultipleTabManager(),
                 }),
-            };
-            // Use initializeFirestore for settings in v9+
-            dbInstance = initializeFirestore(app, firestoreSettings);
+            });
             console.log("Firestore initialized with persistence settings.");
 
             storageInstance = getStorage(app);
@@ -58,7 +57,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
                     console.log("Connected to Firestore Emulator.");
                     connectAuthEmulator(authInstance, 'http://127.0.0.1:9099', { disableWarnings: true });
                     console.log("Connected to Auth Emulator.");
-                    connectStorageEmulator(storageInstance, '127.0.0.1', 9199);
+                    connectStorageEmulator(storageInstance, '127.0.0.1', 9199); // Added Storage emulator connection
                     console.log("Connected to Storage Emulator.");
                 } catch (emulatorError) {
                     console.error("Error connecting to emulators:", emulatorError);
@@ -86,4 +85,3 @@ export const db = dbInstance;
 export const storage = storageInstance;
 export const googleProvider = googleProviderInstance;
 // export { app };
-

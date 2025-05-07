@@ -5,7 +5,7 @@ import * as React from 'react';
 import { useState } from 'react';
 import { ref, uploadBytesResumable, getDownloadURL, type StorageError } from 'firebase/storage';
 import { useAuth } from '@/context/AuthContext';
-import { storage } from '@/lib/firebase/config'; 
+import { storage } from '@/lib/firebase/config';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -225,7 +225,7 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
           setSelectedFile(null);
           if (fileInputRef.current) fileInputRef.current.value = '';
           // Delay hiding progress bar for better UX
-          setTimeout(() => setUploadProgress(0), 2000); 
+          setTimeout(() => setUploadProgress(0), 2000);
         }
       }
     );
@@ -294,4 +294,3 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
     </Card>
   );
 }
-
