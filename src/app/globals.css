@@ -125,6 +125,91 @@ body {
 @media print {
   body {
     margin: 0;
+    padding: 0;
+    background-color: white !important; /* Ensure white background for print */
+    -webkit-print-color-adjust: exact; /* Ensure background colors print in Chrome/Safari */
+    color-adjust: exact; /* Standard property for color printing */
   }
-  /* Add any other print-specific styles here if needed */
+
+  /* Hide elements not meant for printing */
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* Ensure CV preview takes full page width and height */
+  #cv-preview-section {
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 100vh !important; /* Ensure it tries to fill the page */
+    overflow: visible !important; /* Show all content, no scrollbars */
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 1cm !important; /* Add some padding for printing */
+  }
+  
+  /* Make main container take full space in print */
+  main.print\:p-0 {
+    padding: 0 !important;
+  }
+  main.print\:overflow-visible {
+    overflow: visible !important;
+  }
+   main.print\:block {
+    display: block !important;
+  }
+
+
+  /* Reset any specific flex/grid layouts on the main container if they interfere with printing */
+  .flex-col.lg\:flex-row.print\:block {
+    display: block !important; /* Override flex behavior for printing */
+  }
+  
+  /* Specific adjustments for CvPreview component contents if needed */
+  #cv-preview-section h1,
+  #cv-preview-section h2,
+  #cv-preview-section h3,
+  #cv-preview-section p,
+  #cv-preview-section ul,
+  #cv-preview-section li {
+    color: black !important; /* Ensure text is black for readability */
+  }
+  
+  /* Avoid page breaks inside elements where it's undesirable */
+  .break-inside-avoid {
+    break-inside: avoid-page; /* Standard property */
+    page-break-inside: avoid; /* Older property for wider compatibility */
+  }
+
+   /* Ensure sections in preview do not have excessive margins that cause weird breaks */
+  #cv-preview-section section {
+    margin-bottom: 0.5cm !important; /* Adjust as needed */
+  }
+}
+
+/* Apply Tailwind's responsive variants for print styles */
+@tailwind utilities {
+  @media print {
+    .print\:bg-white {
+      background-color: white !important;
+    }
+    .print\:p-0 {
+      padding: 0 !important;
+    }
+     .print\:overflow-visible {
+      overflow: visible !important;
+    }
+     .print\:block {
+      display: block !important;
+    }
+    .print\:shadow-none {
+      box-shadow: none !important;
+    }
+    .print\:rounded-none {
+      border-radius: 0 !important;
+    }
+    .print\:border-none {
+      border: none !important;
+    }
+  }
 }
