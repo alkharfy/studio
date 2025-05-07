@@ -1,8 +1,13 @@
 service firebase.storage {
   match /b/{bucket}/o {
+    // Allow uploads only to the user's own folder within resumes_uploads
     match /resumes_uploads/{userId}/{fileName} {
       allow write: if request.auth != null && request.auth.uid == userId;
       allow read:  if request.auth != null && request.auth.uid == userId;
     }
+    // Optionally, add rules for other paths if needed
+    // match /other_folder/{allPaths=**} {
+    //   allow read, write: if request.auth != null;
+    // }
   }
 }

@@ -5,7 +5,7 @@ import * as React from 'react';
 import { useState } from 'react';
 import { ref, uploadBytesResumable, getDownloadURL, type StorageError } from 'firebase/storage';
 import { useAuth } from '@/context/AuthContext';
-import { storage } from '@/lib/firebase/config';
+import { storage } from '@/lib/firebase/config'; // Import storage and db
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -100,9 +100,9 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
     setError(null);
     setUploadProgress(0);
 
-    // Extend retry timeouts
-    storage.maxUploadRetryTime = 10 * 60 * 1000;   // 10 minutes
-    storage.maxOperationRetryTime = 10 * 60 * 1000; // 10 minutes
+    // Extend retry timeouts - Increased to 10 minutes
+    storage.maxUploadRetryTime = 10 * 60 * 1000;
+    storage.maxOperationRetryTime = 10 * 60 * 1000;
 
     if (useMock) {
       console.info("[PdfUploader] --- MOCK UPLOAD & PARSE ---");
@@ -119,25 +119,26 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
                   description: 'محاكاة استخراج البيانات بدأت...',
                   variant: 'default',
               });
+              // Simulate backend processing time
               setTimeout(() => {
                     const mockParsedData: ParsedResumeData = {
-                      resumeId: `mock_${Date.now()}`,
-                      userId: currentUser.uid,
-                      title: `تجريبي - ${selectedFile.name}`,
-                      personalInfo: {
-                          fullName: "اسم تجريبي",
-                          jobTitle: "وظيفة تجريبية",
-                          email: "mock@example.com",
-                          phone: "123-456-7890",
-                          address: "عنوان تجريبي، مدينة تجريبية",
-                      },
-                      summary: "ملخص تجريبي: مطور برامج متحمس يتمتع بخبرة في ...",
-                      education: [{ degree: "بكالوريوس علوم الحاسب (تجريبي)", institution: "جامعة تجريبية", graduationYear: "2023", details: "مشروع تخرج عن..." }],
-                      experience: [{ jobTitle: "مطور مبتدئ (تجريبي)", company: "شركة تجريبية", startDate: "يناير 2024", endDate: "الحاضر", description: "وصف تجريبي للمهام والمسؤوليات." }],
-                      skills: [{ name: "مهارة تجريبية 1" }, { name: "مهارة تجريبية 2" }],
-                      languages: [{ name: "لغة تجريبية", level: "مستوى تجريبي" }],
-                      hobbies: ["هواية تجريبية 1", "هواية تجريبية 2"],
-                      customSections: [{ title: "قسم تجريبي", content: "محتوى تجريبي" }],
+                        resumeId: `mock_${Date.now()}`,
+                        userId: currentUser.uid,
+                        title: `تجريبي - ${selectedFile.name}`,
+                        personalInfo: {
+                            fullName: "اسم تجريبي",
+                            jobTitle: "وظيفة تجريبية",
+                            email: "mock@example.com",
+                            phone: "123-456-7890",
+                            address: "عنوان تجريبي، مدينة تجريبية",
+                        },
+                        summary: "ملخص تجريبي: مطور برامج متحمس يتمتع بخبرة في ...",
+                        education: [{ degree: "بكالوريوس علوم الحاسب (تجريبي)", institution: "جامعة تجريبية", graduationYear: "2023", details: "مشروع تخرج عن..." }],
+                        experience: [{ jobTitle: "مطور مبتدئ (تجريبي)", company: "شركة تجريبية", startDate: "يناير 2024", endDate: "الحاضر", description: "وصف تجريبي للمهام والمسؤوليات." }],
+                        skills: [{ name: "مهارة تجريبية 1" }, { name: "مهارة تجريبية 2" }],
+                        languages: [{ name: "لغة تجريبية", level: "مستوى تجريبي" }],
+                        hobbies: ["هواية تجريبية 1", "هواية تجريبية 2"],
+                        customSections: [{ title: "قسم تجريبي", content: "محتوى تجريبي" }],
                         parsingDone: true,
                         originalFileName: selectedFile.name,
                         storagePath: `mock_uploads/${currentUser.uid}/${selectedFile.name}`,
@@ -150,8 +151,9 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
                     });
                     setSelectedFile(null);
                     if (fileInputRef.current) fileInputRef.current.value = '';
+                    // Delay hiding progress bar for better UX
                     setTimeout(() => setUploadProgress(0), 1000);
-              }, 3000);
+              }, 3000); // Simulate 3 seconds processing
           }
       }, 200);
       return;
@@ -163,17 +165,13 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
     const storageRef = ref(storage, storagePath);
 
     console.info("[PdfUploader] Calling uploadBytesResumable...");
-    const uploadTask = uploadBytesResumable(storageRef, selectedFile, {
-       // No custom metadata needed here, but include the retry options
-        maxUploadRetryTime: 600_000, // 10 minutes
-        maxOperationRetryTime: 600_000, // 10 minutes
-    });
+    const uploadTask = uploadBytesResumable(storageRef, selectedFile); // Use default metadata, retry times set above
 
     uploadTask.on(
       'state_changed',
       (snapshot) => {
         const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-        setUploadProgress(Number(progress.toFixed(2)));
+        setUploadProgress(Number(progress.toFixed(2))); // Ensure progress is updated correctly
         console.debug(`[PdfUploader] Upload progress: ${progress.toFixed(2)}%`);
       },
       (uploadError: StorageError) => {
@@ -186,7 +184,7 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
         } else if (uploadError.code === 'storage/object-not-found' && process.env.NEXT_PUBLIC_USE_EMULATOR === 'true') {
             message = 'فشل الرفع (Object Not Found). تأكد أن محاكي Storage يعمل وأن مسار الرفع صحيح.';
         } else if (uploadError.code === 'storage/retry-limit-exceeded') {
-            message = ' تجاوز الحد الأقصى لمحاولات تحميل الملف. يرجى التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى.';
+            message = ' تجاوز الحد الأقصى لمحاولات تحميل الملف. يرجى التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى أو تجربة ملف أصغر.'; // Improved message
         }
         setError(message);
         toast({

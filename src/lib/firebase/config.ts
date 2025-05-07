@@ -59,8 +59,13 @@ if (typeof window !== 'undefined' && !getApps().length) {
                     console.log("Connected to Auth Emulator.");
                     connectStorageEmulator(storageInstance, '127.0.0.1', 9199); // Ensure Storage emulator connection is here
                     console.log("Connected to Storage Emulator.");
-                } catch (emulatorError) {
-                    console.error("Error connecting to emulators:", emulatorError);
+                } catch (emulatorError: any) {
+                    // Check if error message indicates already connected
+                    if (!(emulatorError instanceof Error && emulatorError.message.includes('already connected'))) {
+                         console.error("Error connecting to emulators:", emulatorError);
+                    } else {
+                        console.info("Emulators likely already connected.");
+                    }
                 }
             } else {
                  console.log("Firebase Emulators not enabled. Connecting to production Firebase.");
@@ -77,7 +82,7 @@ if (typeof window !== 'undefined' && !getApps().length) {
   authInstance = getAuth(app);
   dbInstance = getFirestore(app);
   storageInstance = getStorage(app);
-  console.log("Firebase app already initialized.");
+  // console.log("Firebase app already initialized."); // Less verbose logging
 }
 
 export const auth = authInstance;
