@@ -147,9 +147,7 @@ export function PdfUploader({ /* Removed onParsingComplete prop */ }: PdfUploade
 
     const fileName = `${Date.now()}_${selectedFile.name}`;
     const metadata = {
-      customMetadata: {
-        'uid': currentUser.uid
-      }
+ customMetadata: { 'requesterUid': currentUser.uid }
     };
     const storagePath = `resumes_uploads/${currentUser.uid}/${fileName}`;
     const storageRef = ref(storage, storagePath);

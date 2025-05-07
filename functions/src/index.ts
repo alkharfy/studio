@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import type { CloudEvent } from "firebase-functions/v2";
 import { onObjectFinalized, type StorageObjectData } from "firebase-functions/v2/storage";
 import { initializeApp, getApps as getAdminApps } from "firebase-admin/app";
-import { getFirestore, serverTimestamp as firestoreServerTimestamp, setDoc as firestoreSetDoc, doc as firestoreDoc } from "firebase-admin/firestore";
+import { getFirestore, FieldValue, setDoc as firestoreSetDoc, doc as firestoreDoc } from "firebase-admin/firestore";
 import { getStorage as getAdminStorage } from "firebase-admin/storage";
 import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
 import { VertexAI, type Content, type Part } from "@google-cloud/vertexai";
@@ -82,9 +82,9 @@ export const parseResumePdf = onObjectFinalized(
       await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
         parsingError: "config_error_services_not_initialized",
         storagePath: name,
-        originalFileName: fileName,
-        createdAt: firestoreServerTimestamp(),
-        updatedAt: firestoreServerTimestamp(),
+ originalFileName: fileName,
+ createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
       return;
     }
@@ -107,8 +107,8 @@ export const parseResumePdf = onObjectFinalized(
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ocr_empty_result",
             storagePath: name,
-            originalFileName: fileName,
-            createdAt: firestoreServerTimestamp(),
+ originalFileName: fileName,
+            createdAt: FieldValue.serverTimestamp(),
             updatedAt: firestoreServerTimestamp(),
         });
         return;
@@ -185,8 +185,8 @@ export const parseResumePdf = onObjectFinalized(
          await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
              parsingError: "vertex_empty_response",
              storagePath: name,
-             originalFileName: fileName,
-             createdAt: firestoreServerTimestamp(),
+ originalFileName: fileName,
+             createdAt: FieldValue.serverTimestamp(),
              updatedAt: firestoreServerTimestamp(),
          });
         return;
@@ -202,8 +202,8 @@ export const parseResumePdf = onObjectFinalized(
           parsingError: `vertex_json_parse_error: ${e.message}`,
           rawAiOutput: jsonString,
           storagePath: name,
-          originalFileName: fileName,
-          createdAt: firestoreServerTimestamp(),
+ originalFileName: fileName,
+          createdAt: FieldValue.serverTimestamp(),
           updatedAt: firestoreServerTimestamp(),
         });
         return;
@@ -216,8 +216,8 @@ export const parseResumePdf = onObjectFinalized(
         await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
             parsingError: "ai_output_missing_fullname",
             extractedData: extractedData,
-            storagePath: name,
-            originalFileName: fileName,
+ storagePath: name,
+ originalFileName: fileName,
             createdAt: firestoreServerTimestamp(),
             updatedAt: firestoreServerTimestamp(),
         });
@@ -261,13 +261,17 @@ export const parseResumePdf = onObjectFinalized(
         parsingDone: true,
         parsingError: null,
         storagePath: name,
-        originalFileName: fileName,
-        createdAt: firestoreServerTimestamp(),
+ originalFileName: fileName,
+        createdAt: FieldValue.serverTimestamp(),
         updatedAt: firestoreServerTimestamp(),
       };
 
       await firestoreSetDoc(resumeDocRef, finalResumeData as any);
  functionsLogger.log("✅ Successfully wrote resume to users/%s/resumes/%s", uid, resumeId, { name });
+
+ await adminStorage.bucket(bucket).file(name).setMetadata({ metadata: { resumeId: resumeId } })
+
+ await firestoreSetDoc(firestoreDoc(db, "users", uid), { latestResumeId: resumeId }, { merge: true });
 
     } catch (error: any) {
  functionsLogger.error("🚨 Unhandled error in parseResumePdf:", error.message, { name, errorObj: error });
@@ -275,8 +279,8 @@ export const parseResumePdf = onObjectFinalized(
       await firestoreSetDoc(firestoreDoc(db, "users", uid, "resumes", errorResumeId), {
         parsingError: `unknown_function_error: ${error.message}`,
         storagePath: name,
-        originalFileName: fileName,
-        createdAt: firestoreServerTimestamp(),
+ originalFileName: fileName,
+        createdAt: FieldValue.serverTimestamp(),
         updatedAt: firestoreServerTimestamp(),
       });
     } finally {
