@@ -29,6 +29,8 @@ function CvBuilderPageContent() {
   const [currentResumeId, setCurrentResumeId] = useState<string | null>(null);
   const [currentRawResumeData, setCurrentRawResumeData] = useState<FirestoreResumeData | null>(null);
   const processingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [hasPrintableData, setHasPrintableData] = React.useState(false);
+
 
   const form = useForm<CvFormData>({
     resolver: zodResolver(cvSchema),
@@ -58,7 +60,7 @@ function CvBuilderPageContent() {
         return;
     }
     console.info("[ProcessingTimer] Starting PDF processing timer.");
-    setIsProcessingPdf(true); // Set processing state
+    setIsProcessingPdf(true); 
     setProcessingProgress(0);
 
     const totalDuration = 30000; 
@@ -78,7 +80,7 @@ function CvBuilderPageContent() {
         return newProgress;
       });
     }, intervalTime);
-  }, [processingProgress]);
+  }, [processingProgress]); // Added processingProgress to deps
 
   const stopProcessingTimer = useCallback(() => {
     if (processingTimerRef.current) {
@@ -86,7 +88,6 @@ function CvBuilderPageContent() {
       clearInterval(processingTimerRef.current);
       processingTimerRef.current = null;
     }
-    // Only change state if it's currently true, to avoid unnecessary re-renders
     if (isProcessingPdf) { 
         console.info("[ProcessingTimer] Setting isProcessingPdf to false.");
         setIsProcessingPdf(false);
@@ -98,8 +99,6 @@ function CvBuilderPageContent() {
   const loadInitialCv = useCallback(async (userId: string) => {
     console.info(`[loadInitialCv] Attempting to load or create initial CV for user: ${userId}. Current state: currentResumeId=${currentResumeId}, isLoadingCv=${isLoadingCv}`);
     setIsLoadingCv(true);
-    // setCurrentRawResumeData(null); // Reset before loading new data - this might cause issues if called while processing another resume
-    // processedResumeIdRef.current = null; // Don't reset this here, it's for tracking toasts
     let loadedCvData: FirestoreResumeData | null = null;
 
     try {
@@ -129,16 +128,15 @@ function CvBuilderPageContent() {
           loadedCvData = { resumeId: cvDocSnap.id, ...cvDocSnap.data() } as FirestoreResumeData;
           console.info("[loadInitialCv] Successfully loaded initial CV data:", loadedCvData);
           updateFormWithData(loadedCvData);
-          setCurrentResumeId(loadedCvData.resumeId); // Set currentResumeId to the one loaded
-          setIsLoadingCv(false); // Data loaded
-          return; // Exit after successful load
+          setCurrentResumeId(loadedCvData.resumeId); 
+          setIsLoadingCv(false); 
+          return; 
         } else {
            console.warn(`[loadInitialCv] latestResumeId ${initialResumeIdToLoad} points to a non-existent document. Will create new draft if no other found.`);
-           initialResumeIdToLoad = null; // Proceed to create new if this path failed
+           initialResumeIdToLoad = null; 
         }
       }
       
-      // If no initialResumeIdToLoad was found or it pointed to a non-existent document
       console.info("[loadInitialCv] No existing valid CV found, creating a new draft.");
       const newResumeRef = doc(collection(db, 'users', userId, 'resumes'));
       const newResumeId = newResumeRef.id;
@@ -164,16 +162,15 @@ function CvBuilderPageContent() {
       }
       updateFormWithData(defaultDraftData);
       setCurrentResumeId(newResumeId);
-      setIsLoadingCv(false); // New draft created and loaded
+      setIsLoadingCv(false); 
     } catch (error) {
       console.error('[loadInitialCv] Error loading/creating initial CV:', error);
       toast({ title: 'خطأ', description: 'لم نتمكن من تحميل أو إنشاء بيانات السيرة الذاتية.', variant: 'destructive' });
       updateFormWithData(null); 
-      setIsLoadingCv(false); // Stop loading on error
+      setIsLoadingCv(false); 
     }
-  }, [currentUser, toast, updateFormWithData]); // form is stable. currentResumeId removed, isLoadingCv removed
+  }, [currentUser, toast, updateFormWithData, currentResumeId, isLoadingCv]); // Added currentResumeId and isLoadingCv as they affect logic inside
 
-  // Effect for initial load or when user changes
   useEffect(() => {
     console.info(`[User/Mount Effect] currentUser?.uid: ${currentUser?.uid}. App's currentResumeId: ${currentResumeId}`);
     if (currentUser?.uid && !currentResumeId && !isProcessingPdf) { 
@@ -182,7 +179,7 @@ function CvBuilderPageContent() {
     } else if (!currentUser?.uid) {
       console.info("[User/Mount Effect] No user. Resetting states.");
       setCurrentResumeId(null);
-      setCurrentRawResumeData(null); // Reset raw data
+      setCurrentRawResumeData(null); 
       updateFormWithData(null); 
       setIsLoadingCv(true); 
       stopProcessingTimer();
@@ -191,7 +188,6 @@ function CvBuilderPageContent() {
     }
   }, [currentUser?.uid, loadInitialCv, updateFormWithData, stopProcessingTimer, form, isProcessingPdf, currentResumeId]);
 
-  // User document listener (for latestResumeId changes AFTER initial load)
   useEffect(() => {
     if (!currentUser?.uid) {
       console.info("[User Listener] No user, skipping setup.");
@@ -205,8 +201,8 @@ function CvBuilderPageContent() {
       console.info(`[User Listener] Snapshot received. Firestore latestResumeId: ${latestIdFromFirestore}. App's currentResumeId: ${currentResumeId}`);
       if (latestIdFromFirestore && latestIdFromFirestore !== currentResumeId) {
         console.info(`[User Listener] latestResumeId changed from ${currentResumeId} to ${latestIdFromFirestore}. Updating app's currentResumeId. Setting isLoadingCv=true.`);
-        setIsLoadingCv(true); // Set loading true as we are about to switch to a new resume
-        setCurrentRawResumeData(null); // Clear old raw data
+        setIsLoadingCv(true); 
+        setCurrentRawResumeData(null); 
         setCurrentResumeId(latestIdFromFirestore); 
       }
     }, (error) => {
@@ -217,24 +213,17 @@ function CvBuilderPageContent() {
       console.info("[User Listener] Unsubscribing.");
       unsubscribeUser();
     };
-  }, [currentUser?.uid, currentResumeId, toast]); // Removed setIsLoadingCv, setCurrentRawResumeData from deps
+  }, [currentUser?.uid, currentResumeId, toast]); 
 
-  // Resume document listener
   useEffect(() => {
     if (!currentUser?.uid || !currentResumeId) {
       console.info(`[Resume Listener] Skipping setup: User UID: ${currentUser?.uid}, Resume ID: ${currentResumeId}`);
-      // If no resume ID, but not processing, ensure loading is false
       if (!isProcessingPdf && isLoadingCv) setIsLoadingCv(false);
       return;
     }
 
     console.info(`[Resume Listener] Setting up for: users/${currentUser.uid}/resumes/${currentResumeId}. isProcessingPdf: ${isProcessingPdf}, isLoadingCv: ${isLoadingCv}`);
     
-    // Don't set isLoadingCv to true if we are already processing a PDF and this listener is just re-subscribing
-    // or if data for this currentResumeId is already loaded.
-    // isLoadingCv should have been set by the User Listener when currentResumeId changed.
-    // Or by loadInitialCv if this is the first load.
-
     const resumeDocRef = doc(db, 'users', currentUser.uid, 'resumes', currentResumeId);
     const unsubscribeResume = onSnapshot(resumeDocRef, (docSnap) => {
       console.info(`[Resume Listener] Snapshot received for resume: ${currentResumeId}. Exists: ${docSnap.exists()}`);
@@ -242,7 +231,6 @@ function CvBuilderPageContent() {
         const updatedCvData = { resumeId: docSnap.id, ...docSnap.data() } as FirestoreResumeData;
         console.info("[Resume Listener] Raw data from Firestore:", JSON.stringify(updatedCvData, null, 2));
         
-        // Check if the new data is substantially different from currentRawResumeData to avoid unnecessary updates
         const isDataDifferent = JSON.stringify(updatedCvData) !== JSON.stringify(currentRawResumeData);
 
         if (isDataDifferent) { 
@@ -252,42 +240,35 @@ function CvBuilderPageContent() {
             console.info("[Resume Listener] Data is same as currentRawResumeData, no form update needed. Checking processing status.");
         }
         
-        setIsLoadingCv(false); // Data for currentResumeId is loaded (or confirmed same), so stop general loading
+        setIsLoadingCv(false); 
 
-        // Check parsing status for PDF processing
         if (updatedCvData.parsingDone || updatedCvData.parsingError) {
           console.info(`[Resume Listener] Parsing status for ${updatedCvData.resumeId}: done=${updatedCvData.parsingDone}, error=${updatedCvData.parsingError}. Stopping timer.`);
           stopProcessingTimer(); 
           
-          // Only show toast if this specific resume ID was not the one last processed and toasted for
           if (processedResumeIdRef.current !== updatedCvData.resumeId) {
             if (updatedCvData.parsingDone && !updatedCvData.parsingError) {
               toast({ title: "✅ تم استخراج البيانات", description: "تم تحديث النموذج بالبيانات المستخرجة.", variant: "default", duration: 7000 });
             } else if (updatedCvData.parsingError) {
               toast({ title: "❌ تعذّر استخراج البيانات تلقائيًا", description: `(${updatedCvData.parsingError}). الرجاء ملء النموذج يدويًا.`, variant: "destructive", duration: 7000 });
             }
-            processedResumeIdRef.current = updatedCvData.resumeId; // Mark this resumeId as processed for toasts
+            processedResumeIdRef.current = updatedCvData.resumeId; 
           }
-        } else if (updatedCvData.storagePath && !isProcessingPdf) { // If there's a storage path, not done/error, and not already processing
+        } else if (updatedCvData.storagePath && !isProcessingPdf && !processingTimerRef.current) { 
           console.info(`[Resume Listener] PDF ${updatedCvData.resumeId} uploaded, awaiting parsing. Starting timer.`);
           startProcessingTimer(); 
-          // If we start processing for a new resume, reset the processedRef
           if (processedResumeIdRef.current !== updatedCvData.resumeId) {
             processedResumeIdRef.current = null; 
           }
         } else if (!updatedCvData.storagePath && isProcessingPdf) {
-            // If storage path is gone (e.g. manual deletion?) and we were processing, stop.
             console.info(`[Resume Listener] No storage path for ${updatedCvData.resumeId} but was processing. Stopping timer.`);
             stopProcessingTimer();
         }
 
       } else {
         console.warn(`[Resume Listener] Resume document ${currentResumeId} does not exist. User: ${currentUser.uid}.`);
-        setIsLoadingCv(false); // Stop loading as doc doesn't exist
-        stopProcessingTimer(); // Stop any processing timer
-        // If the currentResumeId doc is deleted, loadInitialCv will eventually be triggered if user doc listener runs or on refresh.
-        // Consider if immediate action is needed here, e.g., clearing form
-        // updateFormWithData(null); // Clears the form if the active resume is deleted.
+        setIsLoadingCv(false); 
+        stopProcessingTimer(); 
       }
     }, (error) => {
       console.error(`[Resume Listener] Firestore listener error for ${currentResumeId}:`, error);
@@ -300,33 +281,34 @@ function CvBuilderPageContent() {
       console.info(`[Resume Listener] Unsubscribing from resume: ${currentResumeId}`);
       unsubscribeResume();
     };
-  // Dependencies: `currentUser?.uid` and `currentResumeId` are the main drivers.
-  // Callbacks `toast`, `updateFormWithData`, `startProcessingTimer`, `stopProcessingTimer` should be stable.
-  // `isProcessingPdf` is included because `startProcessingTimer` condition depends on it.
-  // `currentRawResumeData` is included for the `isDataDifferent` check to prevent unnecessary `updateFormWithData` calls.
-  // `isLoadingCv` is used to determine if loading state needs to be changed.
   }, [currentUser?.uid, currentResumeId, toast, updateFormWithData, startProcessingTimer, stopProcessingTimer, isProcessingPdf, currentRawResumeData, isLoadingCv]); 
 
 
   const currentFormData = form.watch();
 
+  // Update hasPrintableData whenever currentFormData changes
+  useEffect(() => {
+    const dataIsPrintable = Object.values(currentFormData).some(value => {
+        if (Array.isArray(value)) return value.length > 0;
+        if (typeof value === 'object' && value !== null) { // Check for non-empty objects
+            return Object.values(value).some(v => v !== null && v !== undefined && v !== '');
+        }
+        return value !== null && value !== undefined && value !== '';
+    });
+    setHasPrintableData(dataIsPrintable);
+  }, [currentFormData]);
+
+
   let statusMessage = '';
-  // Prioritize processing message if isProcessingPdf is true
   if (isProcessingPdf) {
     statusMessage = "جاري استخراج البيانات...";
-  } else if (isLoadingCv) { // Show general loading if not processing PDF but still loading CV data
+  } else if (isLoadingCv && !currentRawResumeData) { // Show only if truly loading initial and no data yet
     statusMessage = "جاري تحميل البيانات...";
   }
 
 
   const handleDownloadCv = () => {
-    // Check currentFormData as it's live from the form. currentRawResumeData might be slightly stale.
-    const hasDataToPrint = Object.values(currentFormData).some(value => {
-        if (Array.isArray(value)) return value.length > 0;
-        return value !== null && value !== undefined && value !== '';
-    });
-
-    if (!hasDataToPrint) {
+    if (!hasPrintableData) {
         toast({
             title: "لا توجد بيانات للطباعة",
             description: "الرجاء التأكد من تحميل أو ملء السيرة الذاتية أولاً.",
@@ -338,7 +320,7 @@ function CvBuilderPageContent() {
     window.print();
   };
   
-  const showOverallLoader = isProcessingPdf || (isLoadingCv && !currentRawResumeData);
+  const showOverallLoader = isProcessingPdf || (isLoadingCv && !currentRawResumeData); // Show loader if processing OR initial load without data
 
 
   return (
@@ -363,7 +345,7 @@ function CvBuilderPageContent() {
             <span className="text-sm text-muted-foreground hidden md:inline">
               {currentUser.displayName || currentUser.email}
             </span>
-            <Button variant="outline" onClick={handleDownloadCv} size="sm" disabled={showOverallLoader || Object.keys(form.getValues()).length === 0}>
+            <Button variant="outline" onClick={handleDownloadCv} size="sm" disabled={showOverallLoader || !hasPrintableData}>
               <Download className="ml-2 h-4 w-4" />
               تحميل
             </Button>
@@ -399,7 +381,7 @@ function CvBuilderPageContent() {
           >
             <Form {...form}>
               <CvForm
-                isLoadingCv={isLoadingCv || isProcessingPdf} // Pass combined loading state
+                isLoadingCv={isLoadingCv || isProcessingPdf} 
               />
             </Form>
           </section>
@@ -416,4 +398,3 @@ export default function Home() {
     </ProtectedRoute>
   );
 }
-
